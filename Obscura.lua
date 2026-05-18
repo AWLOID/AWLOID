@@ -23,25 +23,17 @@
 ----------------------------------------------------------------------
 local Library              = {}
 Library.__index            = Library
-Library.Flags              = {}
-Library.FlagCallbacks      = {}
-Library.FlagBindings       = {}
-Library.Connections        = {}
+Library.Flags              = {}        -- [flag] = value
+Library.FlagCallbacks      = {}        -- [flag] = { fn, fn, ... }
+Library.Connections        = {}        -- runtime connections (cleaned on :Destroy)
 Library.Windows            = {}
 Library.Notifications      = {}
-Library.UnloadCallbacks    = {}
-Library.Watermarks         = {}
-Library.ActiveLists        = {}
-Library.Configs            = {}
-Library.CurrentConfig      = nil
-Library.Premium            = false
 Library.Open               = true
-Library.Version            = "2.0.0"
+Library.Version            = "1.0.0"
 Library.Name               = "Obscura"
 Library._zCounter          = 10
 Library._activeDropdown    = nil
 Library._activeColorpicker = nil
-Library._activeModal       = nil
 
 ----------------------------------------------------------------------
 -- SERVICES
@@ -307,59 +299,6 @@ function Library:OnFlag(flag, fn)
     table.insert(Library.FlagCallbacks[flag], fn)
 end
 
-function Library:_BindFlag(flag, api)
-    if flag and api then
-        Library.FlagBindings[flag] = api
-    end
-end
-
-----------------------------------------------------------------------
--- THEME / FONT
-----------------------------------------------------------------------
-function Library:SetTheme(t)
-    if type(t) ~= "table" then return end
-    for k, v in pairs(t) do
-        if Theme[k] ~= nil and typeof(v) == "Color3" then
-            Theme[k] = v
-        end
-    end
-end
-
-function Library:GetTheme()
-    local copy = {}
-    for k, v in pairs(Theme) do copy[k] = v end
-    return copy
-end
-
-function Library:SetFont(f)
-    if typeof(f) == "EnumItem" and f.EnumType == Enum.Font then
-        FONT = f; FONT_M = f; FONT_SB = f; FONT_B = f
-    end
-end
-
-----------------------------------------------------------------------
--- PREMIUM SYSTEM
-----------------------------------------------------------------------
-function Library:SetPremium(state)
-    Library.Premium = state and true or false
-    if Library._premiumChanged then Library._premiumChanged() end
-end
-
-function Library:HasPremium()
-    return Library.Premium
-end
-
-Library._premiumWatchers = {}
-function Library:_WatchPremium(fn)
-    table.insert(Library._premiumWatchers, fn)
-    pcall(fn, Library.Premium)
-end
-Library._premiumChanged = function()
-    for _, fn in ipairs(Library._premiumWatchers) do
-        pcall(fn, Library.Premium)
-    end
-end
-
 ----------------------------------------------------------------------
 -- TOGGLE VISIBILITY
 ----------------------------------------------------------------------
@@ -413,34 +352,13 @@ local function makeMobileButton()
 end
 
 ----------------------------------------------------------------------
--- UNLOAD CALLBACKS
+-- DESTROY / UNLOAD
 ----------------------------------------------------------------------
-function Library:OnUnload(fn)
-    if type(fn) == "function" then
-        table.insert(Library.UnloadCallbacks, fn)
-    end
-end
-
 function Library:Destroy()
-    for _, fn in ipairs(Library.UnloadCallbacks) do
-        pcall(fn)
-    end
-    Library.UnloadCallbacks = {}
-
-    for _, w in ipairs(Library.Watermarks) do
-        pcall(function() w:Destroy() end)
-    end
-    Library.Watermarks = {}
-    for _, a in ipairs(Library.ActiveLists) do
-        pcall(function() a:Destroy() end)
-    end
-    Library.ActiveLists = {}
-
     for _, c in ipairs(Library.Connections) do
         pcall(function() c:Disconnect() end)
     end
     Library.Connections = {}
-
     if Library.ScreenGui then
         pcall(function() Library.ScreenGui:Destroy() end)
         Library.ScreenGui = nil
@@ -448,12 +366,9 @@ function Library:Destroy()
     Library.Windows           = {}
     Library.Flags             = {}
     Library.FlagCallbacks     = {}
-    Library.FlagBindings      = {}
     Library.MobileButton      = nil
-    Library.NotifyHolder      = nil
     Library._activeDropdown   = nil
     Library._activeColorpicker= nil
-    Library._activeModal      = nil
     Library._listeningKeybind = nil
 end
 
@@ -519,10 +434,6 @@ function Library:CreateWindow(opts)
         Active           = true,
     })
     stroke(root, Theme.BorderHi, 1)
-    new("UISizeConstraint", {
-        Parent  = root,
-        MinSize = minSize,
-    })
 
     -- Subtle inner contour
     local inner = new("Frame", {
@@ -560,41 +471,29 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
     })
 
-    local titleHolder = new("Frame", {
-        Parent                 = titleBar,
-        Name                   = "TitleHolder",
-        Position               = UDim2.fromOffset(20, 0),
-        Size                   = UDim2.new(1, -120, 1, 0),
-        BackgroundTransparency = 1,
-        ClipsDescendants       = true,
-    })
-    listLayout(titleHolder, Enum.FillDirection.Horizontal, 8,
-        Enum.HorizontalAlignment.Left, Enum.VerticalAlignment.Center)
     new("TextLabel", {
-        Parent                 = titleHolder,
-        Name                   = "Title",
-        AutomaticSize          = Enum.AutomaticSize.X,
-        Size                   = UDim2.new(0, 0, 1, 0),
+        Parent           = titleBar,
+        Name             = "Title",
+        Position         = UDim2.new(0, 22, 0, 0),
+        Size             = UDim2.new(1, -180, 1, 0),
         BackgroundTransparency = 1,
-        Font                   = FONT_SB,
-        TextSize               = TEXT_SIZE_TITLE,
-        TextColor3             = Theme.Text,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        Text                   = title,
-        LayoutOrder            = 1,
+        Font             = FONT_SB,
+        TextSize         = TEXT_SIZE_TITLE,
+        TextColor3       = Theme.Text,
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        Text             = title,
     })
     new("TextLabel", {
-        Parent                 = titleHolder,
-        Name                   = "Subtitle",
-        AutomaticSize          = Enum.AutomaticSize.X,
-        Size                   = UDim2.new(0, 0, 1, 0),
+        Parent           = titleBar,
+        Name             = "Subtitle",
+        Position         = UDim2.new(0, 22 + (#title * 8) + 8, 0, 0),
+        Size             = UDim2.new(0, 200, 1, 0),
         BackgroundTransparency = 1,
-        Font                   = FONT,
-        TextSize               = TEXT_SIZE_SMALL,
-        TextColor3             = Theme.DimText,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        Text                   = subtitle,
-        LayoutOrder            = 2,
+        Font             = FONT,
+        TextSize         = TEXT_SIZE_SMALL,
+        TextColor3       = Theme.DimText,
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        Text             = subtitle,
     })
 
     -- Title bar buttons
@@ -668,44 +567,10 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
     })
 
-    local searchEnabled = opts.Search ~= false
-    local searchHeight  = searchEnabled and 30 or 0
-
-    local searchBar
-    if searchEnabled then
-        searchBar = new("Frame", {
-            Parent           = sidebar,
-            Name             = "SearchBar",
-            Size             = UDim2.new(1, -16, 0, 22),
-            Position         = UDim2.fromOffset(8, 6),
-            BackgroundColor3 = Theme.Bg3,
-            BorderSizePixel  = 0,
-        })
-        local sbStroke = stroke(searchBar, Theme.Border, 1)
-        local searchInput = new("TextBox", {
-            Parent                 = searchBar,
-            BackgroundTransparency = 1,
-            Position               = UDim2.fromOffset(8, 0),
-            Size                   = UDim2.new(1, -16, 1, 0),
-            Font                   = FONT,
-            TextSize               = TEXT_SIZE_SMALL,
-            TextColor3             = Theme.Text,
-            PlaceholderColor3      = Theme.DimText,
-            PlaceholderText        = "Search...",
-            Text                   = "",
-            ClearTextOnFocus       = false,
-            TextXAlignment         = Enum.TextXAlignment.Left,
-        })
-        searchInput.Focused:Connect(function() sbStroke.Color = Theme.BorderHi end)
-        searchInput.FocusLost:Connect(function() sbStroke.Color = Theme.Border end)
-        searchBar._Input = searchInput
-    end
-
     local tabList = new("ScrollingFrame", {
         Parent                  = sidebar,
         Name                    = "TabList",
-        Size                    = UDim2.new(1, 0, 1, -40 - searchHeight),
-        Position                = UDim2.fromOffset(0, searchHeight),
+        Size                    = UDim2.new(1, 0, 1, -40),
         BackgroundTransparency  = 1,
         BorderSizePixel         = 0,
         ScrollBarThickness      = 0,
@@ -772,24 +637,10 @@ function Library:CreateWindow(opts)
         Sidebar   = sidebar,
         TabList   = tabList,
         Content   = content,
-        SearchBar = searchBar,
         Tabs      = {},
         ActiveTab = nil,
         Title     = title,
     }, Window)
-
-    if searchBar and searchBar._Input then
-        searchBar._Input:GetPropertyChangedSignal("Text"):Connect(function()
-            local q = searchBar._Input.Text:lower()
-            for _, t in ipairs(self.Tabs) do
-                if q == "" then
-                    t.Button.Visible = true
-                else
-                    t.Button.Visible = t.Name:lower():find(q, 1, true) ~= nil
-                end
-            end
-        end)
-    end
 
     table.insert(Library.Windows, self)
     return self
@@ -804,16 +655,12 @@ Tab.__index = Tab
 function Window:CreateTab(name, opts)
     opts = opts or {}
     name = tostring(name or "Tab")
-    local icon         = opts.Icon
-    local iconPos      = (opts.IconPosition or "left"):lower()
-    local hasIcon      = icon and icon ~= ""
-    local stacked      = (iconPos == "top" or iconPos == "bottom")
-    local btnHeight    = stacked and 44 or 28
 
+    -- Sidebar button
     local btn = new("TextButton", {
         Parent           = self.TabList,
         Name             = name,
-        Size             = UDim2.new(1, 0, 0, btnHeight),
+        Size             = UDim2.new(1, 0, 0, 28),
         BackgroundColor3 = Theme.Bg2,
         BorderSizePixel  = 0,
         Text             = "",
@@ -830,61 +677,17 @@ function Window:CreateTab(name, opts)
         Visible          = false,
     })
 
-    local iconImg
-    if hasIcon then
-        iconImg = new("ImageLabel", {
-            Parent                 = btn,
-            BackgroundTransparency = 1,
-            Image                  = tostring(icon),
-            ImageColor3            = Theme.SubText,
-            ScaleType              = Enum.ScaleType.Fit,
-        })
-    end
-
     local label = new("TextLabel", {
         Parent                 = btn,
         BackgroundTransparency = 1,
+        Position               = UDim2.fromOffset(12, 0),
+        Size                   = UDim2.new(1, -16, 1, 0),
         Font                   = FONT_M,
         TextSize               = TEXT_SIZE,
         TextColor3             = Theme.SubText,
+        TextXAlignment         = Enum.TextXAlignment.Left,
         Text                   = name,
     })
-
-    if not hasIcon then
-        label.Position       = UDim2.fromOffset(12, 0)
-        label.Size           = UDim2.new(1, -16, 1, 0)
-        label.TextXAlignment = Enum.TextXAlignment.Left
-    elseif iconPos == "left" then
-        iconImg.Position = UDim2.fromOffset(10, (btnHeight - 14) / 2)
-        iconImg.Size     = UDim2.fromOffset(14, 14)
-        label.Position   = UDim2.fromOffset(30, 0)
-        label.Size       = UDim2.new(1, -34, 1, 0)
-        label.TextXAlignment = Enum.TextXAlignment.Left
-    elseif iconPos == "right" then
-        label.Position   = UDim2.fromOffset(12, 0)
-        label.Size       = UDim2.new(1, -34, 1, 0)
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        iconImg.AnchorPoint = Vector2.new(1, 0.5)
-        iconImg.Position    = UDim2.new(1, -10, 0.5, 0)
-        iconImg.Size        = UDim2.fromOffset(14, 14)
-    elseif iconPos == "top" then
-        iconImg.AnchorPoint = Vector2.new(0.5, 0)
-        iconImg.Position    = UDim2.new(0.5, 0, 0, 6)
-        iconImg.Size        = UDim2.fromOffset(16, 16)
-        label.AnchorPoint   = Vector2.new(0.5, 1)
-        label.Position      = UDim2.new(0.5, 0, 1, -4)
-        label.Size          = UDim2.new(1, -8, 0, 14)
-        label.TextXAlignment = Enum.TextXAlignment.Center
-    elseif iconPos == "bottom" then
-        label.Position      = UDim2.new(0, 0, 0, 4)
-        label.Size          = UDim2.new(1, -8, 0, 14)
-        label.AnchorPoint   = Vector2.new(0, 0)
-        label.Position      = UDim2.fromOffset(4, 4)
-        label.TextXAlignment = Enum.TextXAlignment.Center
-        iconImg.AnchorPoint = Vector2.new(0.5, 1)
-        iconImg.Position    = UDim2.new(0.5, 0, 1, -6)
-        iconImg.Size        = UDim2.fromOffset(16, 16)
-    end
 
     -- Tab page
     local page = new("Frame", {
@@ -935,20 +738,17 @@ function Window:CreateTab(name, opts)
         Right     = right,
         Indicator = indicator,
         Label     = label,
-        Icon      = iconImg,
         Sections  = {},
     }, Tab)
 
     btn.MouseEnter:Connect(function()
         if self.ActiveTab ~= tab then
             tween(label, 0.12, { TextColor3 = Theme.Text })
-            if iconImg then tween(iconImg, 0.12, { ImageColor3 = Theme.Text }) end
         end
     end)
     btn.MouseLeave:Connect(function()
         if self.ActiveTab ~= tab then
             tween(label, 0.12, { TextColor3 = Theme.SubText })
-            if iconImg then tween(iconImg, 0.12, { ImageColor3 = Theme.SubText }) end
         end
     end)
     btn.MouseButton1Click:Connect(function()
@@ -969,9 +769,6 @@ function Window:SelectTab(tab)
             TextColor3 = active and Theme.Text or Theme.SubText,
         })
         t.Label.Font = active and FONT_SB or FONT_M
-        if t.Icon then
-            tween(t.Icon, 0.15, { ImageColor3 = active and Theme.Accent or Theme.SubText })
-        end
     end
     self.ActiveTab = tab
 end
@@ -1067,34 +864,6 @@ local function attachHover(btn, normal, hover, strokeInst)
         tween(btn, 0.12, { BackgroundColor3 = normal })
         if strokeInst then strokeInst.Color = Theme.Border end
     end)
-end
-
-local function premiumGuard(opts)
-    if not opts.Premium then return true end
-    if Library.Premium then return true end
-    Library:Modal({
-        Title   = "Premium Required",
-        Text    = "This feature requires Premium access. Use Library:SetPremium(true) to unlock or contact the developer to purchase.",
-        Buttons = { { Text = "OK", Primary = true } },
-    })
-    return false
-end
-
-local function premiumBadge(parent)
-    local b = new("TextLabel", {
-        Parent                 = parent,
-        AnchorPoint            = Vector2.new(1, 0.5),
-        Position               = UDim2.new(1, -6, 0.5, 0),
-        Size                   = UDim2.fromOffset(28, 12),
-        BackgroundColor3       = Theme.Accent,
-        BorderSizePixel        = 0,
-        Font                   = FONT_B,
-        TextSize               = 9,
-        TextColor3             = Theme.Bg,
-        Text                   = "PRO",
-        ZIndex                 = (parent.ZIndex or 1) + 1,
-    })
-    return b
 end
 
 ----------------------------------------------------------------------
@@ -1203,7 +972,7 @@ function Section:AddButton(opts)
     local label = new("TextLabel", {
         Parent                 = btn,
         BackgroundTransparency = 1,
-        Size                   = UDim2.new(1, opts.Premium and -50 or -16, 1, 0),
+        Size                   = UDim2.new(1, -16, 1, 0),
         Position               = UDim2.fromOffset(8, 0),
         Font                   = FONT_M,
         TextSize               = TEXT_SIZE,
@@ -1212,26 +981,23 @@ function Section:AddButton(opts)
         Text                   = text,
     })
 
-    if opts.Premium then
-        premiumBadge(btn)
-    else
-        new("TextLabel", {
-            Parent                 = btn,
-            BackgroundTransparency = 1,
-            AnchorPoint            = Vector2.new(1, 0.5),
-            Position               = UDim2.new(1, -8, 0.5, 0),
-            Size                   = UDim2.fromOffset(10, 12),
-            Font                   = FONT_B,
-            TextSize               = 12,
-            TextColor3             = Theme.DimText,
-            Text                   = ">",
-        })
-    end
+    -- chevron right
+    new("TextLabel", {
+        Parent                 = btn,
+        BackgroundTransparency = 1,
+        AnchorPoint            = Vector2.new(1, 0.5),
+        Position               = UDim2.new(1, -8, 0.5, 0),
+        Size                   = UDim2.fromOffset(10, 12),
+        Font                   = FONT_B,
+        TextSize               = 12,
+        TextColor3             = Theme.DimText,
+        Text                   = ">",
+    })
 
     attachHover(btn, Theme.Bg3, Theme.Hover, s)
 
     btn.MouseButton1Click:Connect(function()
-        if not premiumGuard(opts) then return end
+        -- click flash
         local orig = btn.BackgroundColor3
         btn.BackgroundColor3 = Theme.Accent
         label.TextColor3     = Theme.Bg
@@ -1321,14 +1087,8 @@ function Section:AddToggle(opts)
 
     attachHover(btn, Theme.Bg3, Theme.Hover, s)
 
-    btn.MouseButton1Click:Connect(function()
-        if not premiumGuard(opts) then return end
-        api:Toggle()
-    end)
+    btn.MouseButton1Click:Connect(function() api:Toggle() end)
 
-    if opts.Premium then premiumBadge(btn) end
-
-    Library:_BindFlag(flag, api)
     api:Set(default, true)
     return api
 end
@@ -1445,7 +1205,6 @@ function Section:AddSlider(opts)
     track.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-            if not premiumGuard(opts) then return end
             dragging = true
             updateFromInput(input)
         end
@@ -1453,7 +1212,6 @@ function Section:AddSlider(opts)
     frame.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-            if not premiumGuard(opts) then return end
             dragging = true
             updateFromInput(input)
         end
@@ -1471,10 +1229,7 @@ function Section:AddSlider(opts)
         end
     end))
 
-    if opts.Premium then premiumBadge(frame) end
-
     attachHover(frame, Theme.Bg3, Theme.Hover, s)
-    Library:_BindFlag(flag, api)
     api:Set(default, true)
     return api
 end
@@ -1673,16 +1428,12 @@ function Section:AddDropdown(opts)
         s.Color = Theme.Border
     end)
     btn.MouseButton1Click:Connect(function()
-        if not premiumGuard(opts) then return end
         if list.Visible then api:Close() else api:Open() end
     end)
-
-    if opts.Premium then premiumBadge(frame) end
 
     api.Button = btn
     api.List = list
 
-    Library:_BindFlag(flag, api)
     api:Refresh(options, true)
     if default ~= nil then api:Set(default, true) end
     render()
@@ -1915,16 +1666,12 @@ function Section:AddMultiDropdown(opts)
     btn.MouseEnter:Connect(function() tween(btn, 0.12, { BackgroundColor3 = Theme.Hover }); s.Color = Theme.BorderHi end)
     btn.MouseLeave:Connect(function() tween(btn, 0.12, { BackgroundColor3 = Theme.Bg3 }); s.Color = Theme.Border end)
     btn.MouseButton1Click:Connect(function()
-        if not premiumGuard(opts) then return end
         if list.Visible then api:Close() else api:Open() end
     end)
-
-    if opts.Premium then premiumBadge(frame) end
 
     api.Button = btn
     api.List = list
 
-    Library:_BindFlag(flag, api)
     api:Refresh(options)
     api:Set(default, true)
     return api
@@ -1995,13 +1742,7 @@ function Section:AddTextbox(opts)
     end
     function api:Get() return input.Text end
 
-    input.Focused:Connect(function()
-        if not premiumGuard(opts) then
-            input:ReleaseFocus()
-            return
-        end
-        s.Color = Theme.BorderHi
-    end)
+    input.Focused:Connect(function() s.Color = Theme.BorderHi end)
     input.FocusLost:Connect(function(enter)
         s.Color = Theme.Border
         if numeric and tonumber(input.Text) == nil then
@@ -2011,8 +1752,6 @@ function Section:AddTextbox(opts)
         task.spawn(callback, input.Text, enter)
     end)
 
-    if opts.Premium then premiumBadge(box) end
-    Library:_BindFlag(flag, api)
     if default ~= "" and flag then Library:SetFlag(flag, default) end
     return api
 end
@@ -2144,14 +1883,11 @@ function Section:AddKeybind(opts)
     end))
     register(UIS.InputEnded:Connect(function(input)
         if mode == "hold" and isKeyPressed(key, input) then
-            if not premiumGuard(opts) then return end
             task.spawn(callback, false)
         end
     end))
 
-    if opts.Premium then premiumBadge(frame) end
     attachHover(frame, Theme.Bg3, Theme.Hover, s)
-    Library:_BindFlag(flag, api)
     if default and flag then Library:SetFlag(flag, default) end
     return api
 end
@@ -2644,897 +2380,6 @@ function Library:Notify(opts)
     end)
 
     return card
-end
-
-----------------------------------------------------------------------
--- MODAL
-----------------------------------------------------------------------
-function Library:Modal(opts)
-    opts = opts or {}
-    local title = tostring(opts.Title or "Modal")
-    local text = tostring(opts.Text or "")
-    local buttons = opts.Buttons or {{ Text = "OK", Primary = true }}
-
-    local sg = getScreenGui()
-
-    if Library._activeModal then
-        pcall(function() Library._activeModal:Destroy() end)
-        Library._activeModal = nil
-    end
-
-    local overlay = new("Frame", {
-        Parent           = sg,
-        Size             = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-        BackgroundTransparency = 0.45,
-        BorderSizePixel  = 0,
-        ZIndex           = 8000,
-    })
-    Library._activeModal = overlay
-
-    local card = new("Frame", {
-        Parent           = overlay,
-        AnchorPoint      = Vector2.new(0.5, 0.5),
-        Position         = UDim2.fromScale(0.5, 0.5),
-        Size             = UDim2.fromOffset(360, 0),
-        AutomaticSize    = Enum.AutomaticSize.Y,
-        BackgroundColor3 = Theme.Bg,
-        BorderSizePixel  = 0,
-        ZIndex           = 8001,
-    })
-    stroke(card, Theme.BorderHi, 1)
-    new("Frame", {
-        Parent           = card,
-        Size             = UDim2.new(1, 0, 0, 2),
-        BackgroundColor3 = Theme.Accent,
-        BorderSizePixel  = 0,
-        ZIndex           = 8002,
-    })
-
-    local content = new("Frame", {
-        Parent                 = card,
-        Position               = UDim2.fromOffset(0, 2),
-        Size                   = UDim2.new(1, 0, 0, 0),
-        AutomaticSize          = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        ZIndex                 = 8002,
-    })
-    pad(content, 16, 14, 16, 14)
-    listLayout(content, Enum.FillDirection.Vertical, 10)
-
-    new("TextLabel", {
-        Parent                 = content,
-        Size                   = UDim2.new(1, 0, 0, 18),
-        BackgroundTransparency = 1,
-        Font                   = FONT_SB,
-        TextSize               = TEXT_SIZE_TITLE,
-        TextColor3             = Theme.Text,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        Text                   = title,
-        LayoutOrder            = 1,
-        ZIndex                 = 8002,
-    })
-    if text ~= "" then
-        new("TextLabel", {
-            Parent                 = content,
-            Size                   = UDim2.new(1, 0, 0, 0),
-            AutomaticSize          = Enum.AutomaticSize.Y,
-            BackgroundTransparency = 1,
-            Font                   = FONT,
-            TextSize               = TEXT_SIZE,
-            TextColor3             = Theme.SubText,
-            TextXAlignment         = Enum.TextXAlignment.Left,
-            TextYAlignment         = Enum.TextYAlignment.Top,
-            TextWrapped            = true,
-            Text                   = text,
-            LayoutOrder            = 2,
-            ZIndex                 = 8002,
-        })
-    end
-
-    local btnRow = new("Frame", {
-        Parent                 = content,
-        Size                   = UDim2.new(1, 0, 0, 28),
-        BackgroundTransparency = 1,
-        LayoutOrder            = 3,
-        ZIndex                 = 8002,
-    })
-    listLayout(btnRow, Enum.FillDirection.Horizontal, 6,
-        Enum.HorizontalAlignment.Right, Enum.VerticalAlignment.Center)
-
-    local function closeModal()
-        if Library._activeModal == overlay then Library._activeModal = nil end
-        overlay:Destroy()
-    end
-
-    for i, b in ipairs(buttons) do
-        local bg = b.Primary and Theme.Accent or Theme.Bg3
-        local fg = b.Primary and Theme.Bg or Theme.Text
-        local btn = new("TextButton", {
-            Parent           = btnRow,
-            Size             = UDim2.fromOffset(90, 26),
-            BackgroundColor3 = bg,
-            BorderSizePixel  = 0,
-            Text             = tostring(b.Text or "OK"),
-            Font             = FONT_M,
-            TextSize         = TEXT_SIZE_SMALL,
-            TextColor3       = fg,
-            AutoButtonColor  = false,
-            LayoutOrder      = i,
-            ZIndex           = 8003,
-        })
-        stroke(btn, Theme.BorderHi, 1)
-        btn.MouseEnter:Connect(function()
-            tween(btn, 0.1, { BackgroundColor3 = b.Primary and Theme.Accent or Theme.Hover })
-        end)
-        btn.MouseLeave:Connect(function()
-            tween(btn, 0.1, { BackgroundColor3 = bg })
-        end)
-        btn.MouseButton1Click:Connect(function()
-            if b.Callback then pcall(b.Callback) end
-            closeModal()
-        end)
-    end
-
-    return overlay
-end
-
-----------------------------------------------------------------------
--- KEY SYSTEM
-----------------------------------------------------------------------
-function Library:KeySystem(opts)
-    opts = opts or {}
-    local title    = tostring(opts.Title or "Key System")
-    local subtitle = tostring(opts.Subtitle or "Enter your key to continue")
-    local keys     = opts.Keys or {}
-    local note     = opts.Note
-    local allowSkip= opts.AllowSkip and true or false
-    local getKeyUrl= opts.GetKeyUrl
-    local saveFlag = opts.SaveFile
-    local onSuccess= opts.OnSuccess
-    local onFailure= opts.OnFailure
-    local copyText = opts.CopyText
-
-    if saveFlag and readfile and isfile then
-        local path = "Obscura/" .. saveFlag .. ".key"
-        local ok, saved = pcall(function()
-            if isfile(path) then return readfile(path) end
-        end)
-        if ok and saved then
-            for _, k in ipairs(keys) do
-                if k == saved then
-                    if onSuccess then pcall(onSuccess) end
-                    return true
-                end
-            end
-        end
-    end
-
-    local sg = getScreenGui()
-    local overlay = new("Frame", {
-        Parent           = sg,
-        Size             = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-        BackgroundTransparency = 0.35,
-        BorderSizePixel  = 0,
-        ZIndex           = 8500,
-    })
-    local card = new("Frame", {
-        Parent           = overlay,
-        AnchorPoint      = Vector2.new(0.5, 0.5),
-        Position         = UDim2.fromScale(0.5, 0.5),
-        Size             = UDim2.fromOffset(320, 0),
-        AutomaticSize    = Enum.AutomaticSize.Y,
-        BackgroundColor3 = Theme.Bg,
-        BorderSizePixel  = 0,
-        ZIndex           = 8501,
-    })
-    stroke(card, Theme.BorderHi, 1)
-    new("Frame", {
-        Parent           = card,
-        Size             = UDim2.new(1, 0, 0, 2),
-        BackgroundColor3 = Theme.Accent,
-        BorderSizePixel  = 0,
-        ZIndex           = 8502,
-    })
-
-    local body = new("Frame", {
-        Parent                 = card,
-        Position               = UDim2.fromOffset(0, 2),
-        Size                   = UDim2.new(1, 0, 0, 0),
-        AutomaticSize          = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        ZIndex                 = 8502,
-    })
-    pad(body, 18, 16, 18, 16)
-    listLayout(body, Enum.FillDirection.Vertical, 8)
-
-    new("TextLabel", {
-        Parent                 = body,
-        Size                   = UDim2.new(1, 0, 0, 20),
-        BackgroundTransparency = 1,
-        Font                   = FONT_SB,
-        TextSize               = TEXT_SIZE_TITLE + 2,
-        TextColor3             = Theme.Text,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        Text                   = title,
-        LayoutOrder            = 1,
-        ZIndex                 = 8502,
-    })
-    new("TextLabel", {
-        Parent                 = body,
-        Size                   = UDim2.new(1, 0, 0, 0),
-        AutomaticSize          = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Font                   = FONT,
-        TextSize               = TEXT_SIZE_SMALL,
-        TextColor3             = Theme.SubText,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        TextWrapped            = true,
-        Text                   = subtitle,
-        LayoutOrder            = 2,
-        ZIndex                 = 8502,
-    })
-
-    local box = new("Frame", {
-        Parent           = body,
-        Size             = UDim2.new(1, 0, 0, 28),
-        BackgroundColor3 = Theme.Bg3,
-        BorderSizePixel  = 0,
-        LayoutOrder      = 3,
-        ZIndex           = 8502,
-    })
-    local boxStroke = stroke(box, Theme.Border, 1)
-    local input = new("TextBox", {
-        Parent                 = box,
-        BackgroundTransparency = 1,
-        Position               = UDim2.fromOffset(8, 0),
-        Size                   = UDim2.new(1, -16, 1, 0),
-        Font                   = FONT_M,
-        TextSize               = TEXT_SIZE,
-        TextColor3             = Theme.Text,
-        PlaceholderColor3      = Theme.DimText,
-        PlaceholderText        = "Key...",
-        Text                   = "",
-        ClearTextOnFocus       = false,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        ZIndex                 = 8503,
-    })
-    input.Focused:Connect(function() boxStroke.Color = Theme.BorderHi end)
-    input.FocusLost:Connect(function() boxStroke.Color = Theme.Border end)
-
-    if note then
-        new("TextLabel", {
-            Parent                 = body,
-            Size                   = UDim2.new(1, 0, 0, 0),
-            AutomaticSize          = Enum.AutomaticSize.Y,
-            BackgroundTransparency = 1,
-            Font                   = FONT,
-            TextSize               = TEXT_SIZE_SMALL,
-            TextColor3             = Theme.DimText,
-            TextXAlignment         = Enum.TextXAlignment.Left,
-            TextWrapped            = true,
-            Text                   = tostring(note),
-            LayoutOrder            = 4,
-            ZIndex                 = 8502,
-        })
-    end
-
-    local btnRow = new("Frame", {
-        Parent                 = body,
-        Size                   = UDim2.new(1, 0, 0, 28),
-        BackgroundTransparency = 1,
-        LayoutOrder            = 5,
-        ZIndex                 = 8502,
-    })
-    listLayout(btnRow, Enum.FillDirection.Horizontal, 6,
-        Enum.HorizontalAlignment.Right, Enum.VerticalAlignment.Center)
-
-    local result = Instance.new("BindableEvent")
-    local validated = false
-    local resolveValue = false
-
-    local function makeBtn(text_, primary, order)
-        local bg = primary and Theme.Accent or Theme.Bg3
-        local fg = primary and Theme.Bg or Theme.Text
-        local b = new("TextButton", {
-            Parent           = btnRow,
-            Size             = UDim2.fromOffset(80, 24),
-            BackgroundColor3 = bg,
-            BorderSizePixel  = 0,
-            Text             = text_,
-            Font             = FONT_M,
-            TextSize         = TEXT_SIZE_SMALL,
-            TextColor3       = fg,
-            AutoButtonColor  = false,
-            LayoutOrder      = order,
-            ZIndex           = 8503,
-        })
-        stroke(b, Theme.BorderHi, 1)
-        b.MouseEnter:Connect(function() tween(b, 0.1, { BackgroundColor3 = primary and Theme.Accent or Theme.Hover }) end)
-        b.MouseLeave:Connect(function() tween(b, 0.1, { BackgroundColor3 = bg }) end)
-        return b
-    end
-
-    if getKeyUrl then
-        local linkBtn = makeBtn("Get Key", false, 1)
-        linkBtn.MouseButton1Click:Connect(function()
-            if setclipboard then
-                setclipboard(copyText or getKeyUrl)
-            end
-            Library:Notify({
-                Title = "Get Key",
-                Text  = "Link copied: " .. getKeyUrl,
-                Duration = 5,
-            })
-        end)
-    end
-
-    if allowSkip then
-        local skipBtn = makeBtn("Skip", false, 2)
-        skipBtn.MouseButton1Click:Connect(function()
-            validated = true; resolveValue = true
-            overlay:Destroy()
-            if onSuccess then pcall(onSuccess) end
-            result:Fire()
-        end)
-    end
-
-    local submit = makeBtn("Submit", true, 3)
-    local function trySubmit()
-        local k = input.Text
-        for _, valid in ipairs(keys) do
-            if k == valid then
-                validated = true; resolveValue = true
-                if saveFlag and writefile and makefolder and isfolder then
-                    pcall(function()
-                        if not isfolder("Obscura") then makefolder("Obscura") end
-                        writefile("Obscura/" .. saveFlag .. ".key", k)
-                    end)
-                end
-                overlay:Destroy()
-                if onSuccess then pcall(onSuccess) end
-                result:Fire()
-                return
-            end
-        end
-        if onFailure then pcall(onFailure) end
-        boxStroke.Color = Color3.fromRGB(255, 80, 80)
-        local origPos = card.Position
-        for i = 1, 6 do
-            card.Position = UDim2.new(0.5, (i % 2 == 0) and -6 or 6, 0.5, 0)
-            task.wait(0.04)
-        end
-        card.Position = origPos
-        task.delay(0.6, function() if boxStroke and boxStroke.Parent then boxStroke.Color = Theme.Border end end)
-    end
-    submit.MouseButton1Click:Connect(trySubmit)
-    input.FocusLost:Connect(function(enter)
-        if enter then trySubmit() end
-    end)
-
-    result.Event:Wait()
-    result:Destroy()
-    return resolveValue
-end
-
-----------------------------------------------------------------------
--- WATERMARK
-----------------------------------------------------------------------
-function Library:CreateWatermark(opts)
-    opts = opts or {}
-    local format   = opts.Text or "Obscura | {fps} fps | {time}"
-    local position = (opts.Position or "topleft"):lower()
-    local sg       = getScreenGui()
-
-    local frame = new("Frame", {
-        Parent           = sg,
-        Size             = UDim2.fromOffset(0, 24),
-        AutomaticSize    = Enum.AutomaticSize.X,
-        BackgroundColor3 = Theme.Bg,
-        BorderSizePixel  = 0,
-        ZIndex           = 9000,
-    })
-    stroke(frame, Theme.BorderHi, 1)
-    new("Frame", {
-        Parent           = frame,
-        Size             = UDim2.new(1, 0, 0, 1),
-        Position         = UDim2.new(0, 0, 0, 0),
-        BackgroundColor3 = Theme.Accent,
-        BorderSizePixel  = 0,
-        ZIndex           = 9001,
-    })
-
-    local label = new("TextLabel", {
-        Parent                 = frame,
-        AutomaticSize          = Enum.AutomaticSize.X,
-        Size                   = UDim2.new(0, 0, 1, 0),
-        BackgroundTransparency = 1,
-        Font                   = FONT_M,
-        TextSize               = TEXT_SIZE_SMALL,
-        TextColor3             = Theme.Text,
-        Text                   = " ",
-        ZIndex                 = 9001,
-    })
-    pad(label, 8, 0, 8, 0)
-
-    local function updatePos()
-        if position == "topleft" then
-            frame.AnchorPoint = Vector2.new(0, 0)
-            frame.Position    = UDim2.new(0, 12, 0, 12)
-        elseif position == "topright" then
-            frame.AnchorPoint = Vector2.new(1, 0)
-            frame.Position    = UDim2.new(1, -12, 0, 12)
-        elseif position == "topcenter" then
-            frame.AnchorPoint = Vector2.new(0.5, 0)
-            frame.Position    = UDim2.new(0.5, 0, 0, 12)
-        elseif position == "bottomleft" then
-            frame.AnchorPoint = Vector2.new(0, 1)
-            frame.Position    = UDim2.new(0, 12, 1, -12)
-        elseif position == "bottomright" then
-            frame.AnchorPoint = Vector2.new(1, 1)
-            frame.Position    = UDim2.new(1, -12, 1, -12)
-        elseif position == "bottomcenter" then
-            frame.AnchorPoint = Vector2.new(0.5, 1)
-            frame.Position    = UDim2.new(0.5, 0, 1, -12)
-        end
-    end
-    updatePos()
-
-    local fps, frames, lastT = 60, 0, tick()
-    local custom = {}
-
-    local function formatText()
-        local n = os.date("*t")
-        local timeStr = string.format("%02d:%02d:%02d", n.hour, n.min, n.sec)
-        local fpsStr  = tostring(math.floor(fps + 0.5))
-        local pingStr = "0"
-        pcall(function()
-            local stat = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]
-            pingStr = tostring(math.floor(stat:GetValue() + 0.5))
-        end)
-        local userStr = LP and LP.DisplayName or "user"
-        local gameStr = tostring(game.PlaceId)
-        local result_ = format
-            :gsub("{fps}", fpsStr)
-            :gsub("{time}", timeStr)
-            :gsub("{ping}", pingStr)
-            :gsub("{user}", userStr)
-            :gsub("{game}", gameStr)
-            :gsub("{version}", Library.Version)
-            :gsub("{name}", Library.Name)
-        for k, v in pairs(custom) do
-            result_ = result_:gsub("{" .. k .. "}", tostring(type(v) == "function" and v() or v))
-        end
-        return result_
-    end
-
-    local conn = RS.RenderStepped:Connect(function(dt)
-        frames = frames + 1
-        local now = tick()
-        if now - lastT >= 0.3 then
-            fps = frames / (now - lastT)
-            frames = 0
-            lastT = now
-        end
-        label.Text = formatText()
-    end)
-    table.insert(Library.Connections, conn)
-
-    local api = {}
-    function api:SetText(t)     format = tostring(t or "") end
-    function api:SetPosition(p) position = (p or "topleft"):lower(); updatePos() end
-    function api:SetVisible(v)  frame.Visible = v and true or false end
-    function api:SetVar(k, v)   custom[k] = v end
-    function api:Destroy()
-        if conn then pcall(function() conn:Disconnect() end) end
-        if frame and frame.Parent then frame:Destroy() end
-        for i, w in ipairs(Library.Watermarks) do
-            if w == api then table.remove(Library.Watermarks, i); break end
-        end
-    end
-    table.insert(Library.Watermarks, api)
-    return api
-end
-
-----------------------------------------------------------------------
--- ACTIVE LIST (shown enabled features in real-time)
-----------------------------------------------------------------------
-function Library:CreateActiveList(opts)
-    opts = opts or {}
-    local title    = tostring(opts.Title or "ACTIVE")
-    local position = (opts.Position or "topright"):lower()
-    local sg       = getScreenGui()
-
-    local frame = new("Frame", {
-        Parent           = sg,
-        Size             = UDim2.fromOffset(170, 0),
-        AutomaticSize    = Enum.AutomaticSize.Y,
-        BackgroundColor3 = Theme.Bg,
-        BorderSizePixel  = 0,
-        ZIndex           = 7000,
-        Visible          = true,
-    })
-    stroke(frame, Theme.BorderHi, 1)
-    new("Frame", {
-        Parent           = frame,
-        Size             = UDim2.new(0, 2, 1, 0),
-        BackgroundColor3 = Theme.Accent,
-        BorderSizePixel  = 0,
-        ZIndex           = 7001,
-    })
-
-    local header = new("TextLabel", {
-        Parent                 = frame,
-        Position               = UDim2.fromOffset(8, 0),
-        Size                   = UDim2.new(1, -8, 0, 20),
-        BackgroundTransparency = 1,
-        Font                   = FONT_SB,
-        TextSize               = TEXT_SIZE_SMALL,
-        TextColor3             = Theme.Text,
-        Text                   = title,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        ZIndex                 = 7001,
-    })
-
-    local list = new("Frame", {
-        Parent                 = frame,
-        Position               = UDim2.fromOffset(8, 20),
-        Size                   = UDim2.new(1, -16, 0, 0),
-        AutomaticSize          = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        ZIndex                 = 7001,
-    })
-    pad(list, 0, 0, 0, 6)
-    listLayout(list, Enum.FillDirection.Vertical, 2)
-
-    local function updatePos()
-        if position == "topleft" then
-            frame.AnchorPoint = Vector2.new(0, 0); frame.Position = UDim2.new(0, 12, 0, 12)
-        elseif position == "topright" then
-            frame.AnchorPoint = Vector2.new(1, 0); frame.Position = UDim2.new(1, -12, 0, 12)
-        elseif position == "bottomleft" then
-            frame.AnchorPoint = Vector2.new(0, 1); frame.Position = UDim2.new(0, 12, 1, -12)
-        elseif position == "bottomright" then
-            frame.AnchorPoint = Vector2.new(1, 1); frame.Position = UDim2.new(1, -12, 1, -12)
-        elseif position == "topcenter" then
-            frame.AnchorPoint = Vector2.new(0.5, 0); frame.Position = UDim2.new(0.5, 0, 0, 12)
-        elseif position == "left" then
-            frame.AnchorPoint = Vector2.new(0, 0.5); frame.Position = UDim2.new(0, 12, 0.5, 0)
-        elseif position == "right" then
-            frame.AnchorPoint = Vector2.new(1, 0.5); frame.Position = UDim2.new(1, -12, 0.5, 0)
-        end
-    end
-    updatePos()
-
-    local entries = {}
-    local conn
-    conn = RS.Heartbeat:Connect(function()
-        local anyVisible = false
-        for _, e in pairs(entries) do
-            local active = false
-            local ok, v = pcall(e.GetActive)
-            if ok and v then active = true end
-            e.Frame.Visible = active
-            if active then anyVisible = true end
-            if e.GetText then
-                local ok2, t = pcall(e.GetText)
-                if ok2 and t then e.Label.Text = tostring(t) end
-            end
-        end
-        frame.Visible = anyVisible
-    end)
-    table.insert(Library.Connections, conn)
-
-    local api = {}
-    function api:Add(name, getActive, getText)
-        if entries[name] then return end
-        local row = new("Frame", {
-            Parent                 = list,
-            Size                   = UDim2.new(1, 0, 0, 16),
-            BackgroundTransparency = 1,
-            Visible                = false,
-            ZIndex                 = 7002,
-        })
-        new("Frame", {
-            Parent           = row,
-            AnchorPoint      = Vector2.new(0, 0.5),
-            Position         = UDim2.new(0, 0, 0.5, 0),
-            Size             = UDim2.fromOffset(4, 4),
-            BackgroundColor3 = Theme.Accent,
-            BorderSizePixel  = 0,
-            ZIndex           = 7002,
-        })
-        local lbl = new("TextLabel", {
-            Parent                 = row,
-            Position               = UDim2.fromOffset(10, 0),
-            Size                   = UDim2.new(1, -10, 1, 0),
-            BackgroundTransparency = 1,
-            Font                   = FONT,
-            TextSize               = TEXT_SIZE_SMALL,
-            TextColor3             = Theme.Text,
-            TextXAlignment         = Enum.TextXAlignment.Left,
-            Text                   = tostring((getText and getText()) or name),
-            ZIndex                 = 7002,
-        })
-        entries[name] = { Frame = row, GetActive = getActive or function() return true end, GetText = getText, Label = lbl }
-    end
-    function api:Remove(name)
-        if entries[name] then
-            entries[name].Frame:Destroy()
-            entries[name] = nil
-        end
-    end
-    function api:SetPosition(p) position = (p or "topright"):lower(); updatePos() end
-    function api:SetVisible(v)  frame.Visible = v and true or false end
-    function api:Destroy()
-        if conn then pcall(function() conn:Disconnect() end) end
-        if frame and frame.Parent then frame:Destroy() end
-        for i, a in ipairs(Library.ActiveLists) do
-            if a == api then table.remove(Library.ActiveLists, i); break end
-        end
-    end
-    table.insert(Library.ActiveLists, api)
-    return api
-end
-
-----------------------------------------------------------------------
--- CONFIG SYSTEM (file IO if executor supports it, in-memory fallback)
-----------------------------------------------------------------------
-local function _hasFileIO()
-    return writefile and readfile and isfile and makefolder and isfolder and listfiles and delfile
-end
-
-local function _ensureConfigFolder(folder)
-    folder = folder or "Obscura/Configs"
-    if not _hasFileIO() then return false end
-    pcall(function()
-        if not isfolder("Obscura") then makefolder("Obscura") end
-        if not isfolder(folder) then makefolder(folder) end
-    end)
-    return true
-end
-
-local function _encodeValue(v)
-    if typeof(v) == "Color3" then
-        return { __t = "Color3", r = v.R, g = v.G, b = v.B }
-    elseif typeof(v) == "EnumItem" then
-        if v.EnumType == Enum.KeyCode then
-            return { __t = "KeyCode", n = v.Name }
-        elseif v.EnumType == Enum.UserInputType then
-            return { __t = "UserInputType", n = v.Name }
-        end
-    elseif type(v) == "boolean" or type(v) == "number" or type(v) == "string" then
-        return v
-    elseif type(v) == "table" then
-        local arr = {}
-        for i, item in ipairs(v) do arr[i] = tostring(item) end
-        return arr
-    end
-    return nil
-end
-
-local function _decodeValue(v)
-    if type(v) == "table" and v.__t then
-        if v.__t == "Color3" then return Color3.new(v.r, v.g, v.b)
-        elseif v.__t == "KeyCode" then return Enum.KeyCode[v.n]
-        elseif v.__t == "UserInputType" then return Enum.UserInputType[v.n]
-        end
-    end
-    return v
-end
-
-function Library:GetConfigFolder()
-    return "Obscura/Configs"
-end
-
-function Library:SaveConfig(name)
-    name = tostring(name or "default")
-    local data = {}
-    for k, v in pairs(Library.Flags) do
-        local enc = _encodeValue(v)
-        if enc ~= nil then data[k] = enc end
-    end
-    local json = HttpService:JSONEncode(data)
-    Library.Configs[name] = json
-    if _ensureConfigFolder() then
-        pcall(function()
-            writefile(Library:GetConfigFolder() .. "/" .. name .. ".json", json)
-        end)
-    end
-    Library.CurrentConfig = name
-    return true
-end
-
-function Library:LoadConfig(name)
-    name = tostring(name or "default")
-    local json
-    if _hasFileIO() then
-        pcall(function()
-            local path = Library:GetConfigFolder() .. "/" .. name .. ".json"
-            if isfile(path) then json = readfile(path) end
-        end)
-    end
-    if not json then json = Library.Configs[name] end
-    if not json then return false end
-
-    local ok, data = pcall(function() return HttpService:JSONDecode(json) end)
-    if not ok or type(data) ~= "table" then return false end
-
-    for k, v in pairs(data) do
-        local decoded = _decodeValue(v)
-        Library:SetFlag(k, decoded)
-        local api = Library.FlagBindings[k]
-        if api and api.Set then
-            pcall(api.Set, api, decoded, true)
-        end
-    end
-    Library.CurrentConfig = name
-    return true
-end
-
-function Library:ListConfigs()
-    local arr = {}
-    local seen = {}
-    if _hasFileIO() then
-        pcall(function()
-            local folder = Library:GetConfigFolder()
-            if isfolder(folder) then
-                for _, file in ipairs(listfiles(folder)) do
-                    local n = file:match("([^/\\]+)%.json$")
-                    if n and not seen[n] then
-                        table.insert(arr, n); seen[n] = true
-                    end
-                end
-            end
-        end)
-    end
-    for k in pairs(Library.Configs) do
-        if not seen[k] then table.insert(arr, k); seen[k] = true end
-    end
-    table.sort(arr)
-    return arr
-end
-
-function Library:DeleteConfig(name)
-    name = tostring(name or "")
-    if _hasFileIO() then
-        pcall(function()
-            local path = Library:GetConfigFolder() .. "/" .. name .. ".json"
-            if isfile(path) then delfile(path) end
-        end)
-    end
-    Library.Configs[name] = nil
-    if Library.CurrentConfig == name then Library.CurrentConfig = nil end
-end
-
-----------------------------------------------------------------------
--- PLAYER DROPDOWN (real-time roster)
-----------------------------------------------------------------------
-function Section:AddPlayerDropdown(opts)
-    opts = opts or {}
-    opts.Options = {}
-    opts.Text    = opts.Text or "Player"
-    local includeSelf = opts.IncludeSelf and true or false
-
-    local function roster()
-        local arr = {}
-        for _, p in ipairs(Players:GetPlayers()) do
-            if includeSelf or p ~= LP then
-                table.insert(arr, p.Name)
-            end
-        end
-        table.sort(arr)
-        return arr
-    end
-
-    local api = self:AddDropdown(opts)
-    api:Refresh(roster(), true)
-
-    local function update() api:Refresh(roster(), true) end
-    table.insert(Library.Connections, Players.PlayerAdded:Connect(update))
-    table.insert(Library.Connections, Players.PlayerRemoving:Connect(update))
-
-    function api:GetPlayer()
-        local n = api:Get()
-        if not n then return nil end
-        return Players:FindFirstChild(n)
-    end
-    return api
-end
-
-----------------------------------------------------------------------
--- MINI GRAPH (bar chart, push samples in real time)
-----------------------------------------------------------------------
-function Section:AddGraph(opts)
-    opts = opts or {}
-    local text    = tostring(opts.Text or "Graph")
-    local maxSamples = tonumber(opts.Samples) or 60
-    local minV    = tonumber(opts.Min) or 0
-    local maxV    = tonumber(opts.Max) or 100
-    local height  = tonumber(opts.Height) or 60
-
-    local frame = new("Frame", {
-        Parent           = self.Content,
-        Size             = UDim2.new(1, 0, 0, 18 + height + 4),
-        BackgroundColor3 = Theme.Bg3,
-        BorderSizePixel  = 0,
-    })
-    stroke(frame, Theme.Border, 1)
-    pad(frame, 6, 4, 6, 4)
-
-    local label = new("TextLabel", {
-        Parent                 = frame,
-        BackgroundTransparency = 1,
-        Size                   = UDim2.new(1, -60, 0, 14),
-        Font                   = FONT_M,
-        TextSize               = TEXT_SIZE_SMALL,
-        TextColor3             = Theme.Text,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        Text                   = text,
-    })
-    local valueLbl = new("TextLabel", {
-        Parent                 = frame,
-        BackgroundTransparency = 1,
-        AnchorPoint            = Vector2.new(1, 0),
-        Position               = UDim2.new(1, 0, 0, 0),
-        Size                   = UDim2.new(0, 60, 0, 14),
-        Font                   = FONT_M,
-        TextSize               = TEXT_SIZE_SMALL,
-        TextColor3             = Theme.SubText,
-        TextXAlignment         = Enum.TextXAlignment.Right,
-        Text                   = "0",
-    })
-
-    local plot = new("Frame", {
-        Parent           = frame,
-        Position         = UDim2.fromOffset(0, 16),
-        Size             = UDim2.new(1, 0, 0, height),
-        BackgroundColor3 = Theme.Bg,
-        BorderSizePixel  = 0,
-    })
-    stroke(plot, Theme.Border, 1)
-
-    local bars = {}
-    for i = 1, maxSamples do
-        bars[i] = new("Frame", {
-            Parent           = plot,
-            Size             = UDim2.new(1 / maxSamples, -1, 0, 0),
-            Position         = UDim2.new((i - 1) / maxSamples, 0, 1, 0),
-            AnchorPoint      = Vector2.new(0, 1),
-            BackgroundColor3 = Theme.Accent,
-            BorderSizePixel  = 0,
-        })
-    end
-
-    local samples = {}
-    for i = 1, maxSamples do samples[i] = minV end
-
-    local function render()
-        local span = maxV - minV
-        if span <= 0 then span = 1 end
-        for i, s in ipairs(samples) do
-            local pct = clamp((s - minV) / span, 0, 1)
-            bars[i].Size = UDim2.new(1 / maxSamples, -1, pct, 0)
-        end
-        valueLbl.Text = tostring(round(samples[#samples], 2))
-    end
-    render()
-
-    local api = {}
-    function api:Push(v)
-        v = tonumber(v) or 0
-        table.remove(samples, 1)
-        table.insert(samples, v)
-        render()
-    end
-    function api:SetRange(a, b) minV, maxV = a, b; render() end
-    function api:Clear()
-        for i = 1, maxSamples do samples[i] = minV end
-        render()
-    end
-    function api:SetText(t) label.Text = tostring(t) end
-    return api
 end
 
 return Library
