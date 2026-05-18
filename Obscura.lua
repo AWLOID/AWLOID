@@ -756,6 +756,58 @@ function Library:CreateWindow(opts)
     -- Drag
     makeDraggable(root, titleBar)
 
+    -- Resize handle (bottom-right corner)
+    local resizeHandle = new("TextButton", {
+        Parent           = root,
+        Name             = "ResizeHandle",
+        AnchorPoint      = Vector2.new(1, 1),
+        Position         = UDim2.new(1, 0, 1, 0),
+        Size             = UDim2.fromOffset(16, 16),
+        BackgroundTransparency = 1,
+        Text             = "",
+        AutoButtonColor  = false,
+        ZIndex           = 100,
+    })
+    local resizeIcon = new("TextLabel", {
+        Parent                 = resizeHandle,
+        Size                   = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Font                   = FONT,
+        TextSize               = 12,
+        TextColor3             = Theme.DimText,
+        Text                   = "◢",
+        ZIndex                 = 101,
+    })
+
+    do
+        local resizing = false
+        local resizeStartInput, sizeStart
+
+        resizeHandle.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+                resizing = true
+                resizeStartInput = input.Position
+                sizeStart = root.AbsoluteSize
+            end
+        end)
+        register(UIS.InputChanged:Connect(function(input)
+            if resizing and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - resizeStartInput
+                local newW = math.max(sizeStart.X + delta.X, minSize.X)
+                local newH = math.max(sizeStart.Y + delta.Y, minSize.Y)
+                root.Size = UDim2.fromOffset(newW, newH)
+            end
+        end))
+        register(UIS.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+                resizing = false
+            end
+        end))
+    end
+
     -- Toggle hotkey (PC)
     register(UIS.InputBegan:Connect(function(input, processed)
         if processed then return end
@@ -2363,6 +2415,11 @@ function Section:AddColorpicker(opts)
     end
 
     function api:Set(c, a, silent)
+        -- Handle api:Set(color, silent) call pattern (e.g. from LoadConfig)
+        if type(a) == "boolean" and silent == nil then
+            silent = a
+            a = nil
+        end
         if c then h, s2, v = Color3.toHSV(c) end
         if a ~= nil then alpha = clamp(a, 0, 1) end
         render()
@@ -3320,6 +3377,7 @@ end
 local function _decodeValue(v)
     if type(v) == "table" and v.__t then
         if v.__t == "Color3" then return Color3.new(v.r, v.g, v.b)
+        elseif v.__t == "Color3A" then return Color3.new(v.r, v.g, v.b), v.a
         elseif v.__t == "KeyCode" then return Enum.KeyCode[v.n]
         elseif v.__t == "UserInputType" then return Enum.UserInputType[v.n]
         end
@@ -3334,9 +3392,26 @@ end
 function Library:SaveConfig(name)
     name = tostring(name or "default")
     local data = {}
+    -- Use FlagBindings to get accurate values (e.g. colorpicker with alpha)
+    for k, api in pairs(Library.FlagBindings) do
+        if api and api.Get then
+            local ok, v1, v2 = pcall(api.Get, api)
+            if ok then
+                if typeof(v1) == "Color3" and type(v2) == "number" then
+                    data[k] = { __t = "Color3A", r = v1.R, g = v1.G, b = v1.B, a = v2 }
+                else
+                    local enc = _encodeValue(v1)
+                    if enc ~= nil then data[k] = enc end
+                end
+            end
+        end
+    end
+    -- Also save flags without bindings
     for k, v in pairs(Library.Flags) do
-        local enc = _encodeValue(v)
-        if enc ~= nil then data[k] = enc end
+        if data[k] == nil then
+            local enc = _encodeValue(v)
+            if enc ~= nil then data[k] = enc end
+        end
     end
     local json = HttpService:JSONEncode(data)
     Library.Configs[name] = json
@@ -3365,11 +3440,36 @@ function Library:LoadConfig(name)
     if not ok or type(data) ~= "table" then return false end
 
     for k, v in pairs(data) do
-        local decoded = _decodeValue(v)
-        Library:SetFlag(k, decoded)
         local api = Library.FlagBindings[k]
         if api and api.Set then
-            pcall(api.Set, api, decoded, true)
+            if type(v) == "table" and v.__t == "Color3A" then
+                -- Colorpicker with alpha
+                local c = Color3.new(v.r, v.g, v.b)
+                pcall(api.Set, api, c, v.a, true)
+                Library.Flags[k] = c
+            else
+                local decoded = _decodeValue(v)
+                Library.Flags[k] = decoded
+                pcall(api.Set, api, decoded, true)
+            end
+        else
+            local decoded = _decodeValue(v)
+            Library.Flags[k] = decoded
+        end
+    end
+    -- Fire flag callbacks after all values are set
+    for k, v in pairs(data) do
+        local decoded
+        if type(v) == "table" and v.__t == "Color3A" then
+            decoded = Color3.new(v.r, v.g, v.b)
+        else
+            decoded = _decodeValue(v)
+        end
+        local list = Library.FlagCallbacks[k]
+        if list then
+            for _, fn in ipairs(list) do
+                task.spawn(fn, decoded)
+            end
         end
     end
     Library.CurrentConfig = name
