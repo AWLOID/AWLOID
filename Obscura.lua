@@ -25,15 +25,23 @@ local Library              = {}
 Library.__index            = Library
 Library.Flags              = {}        -- [flag] = value
 Library.FlagCallbacks      = {}        -- [flag] = { fn, fn, ... }
+Library.FlagControls       = {}
 Library.Connections        = {}        -- runtime connections (cleaned on :Destroy)
+Library.UnloadCallbacks    = {}
+Library.Keybinds           = {}
 Library.Windows            = {}
 Library.Notifications      = {}
+Library.Settings           = { Folder = "Obscura/settings", Profile = "default" }
+Library.Premium            = { Enabled = false, Unlocked = false, Owned = {}, Prices = {} }
+Library.ActiveListItems    = {}
 Library.Open               = true
-Library.Version            = "1.0.0"
+Library.Version            = "2.0.0"
 Library.Name               = "Obscura"
 Library._zCounter          = 10
 Library._activeDropdown    = nil
 Library._activeColorpicker = nil
+Library._activeModal       = nil
+Library._themeVersion      = 0
 
 ----------------------------------------------------------------------
 -- SERVICES
@@ -63,6 +71,10 @@ local Theme = {
     Accent      = Color3.fromRGB(255, 255, 255),
     Track       = Color3.fromRGB(32,  32,  32),
     Disabled    = Color3.fromRGB(60,  60,  60),
+    Success     = Color3.fromRGB(120, 255, 170),
+    Warning     = Color3.fromRGB(255, 215, 120),
+    Danger      = Color3.fromRGB(255, 120, 120),
+    Premium     = Color3.fromRGB(255, 255, 255),
 }
 Library.Theme = Theme
 
@@ -151,6 +163,167 @@ local function isInside(frame, pos)
     local p, s = frame.AbsolutePosition, frame.AbsoluteSize
     return pos.X >= p.X and pos.X <= p.X + s.X
        and pos.Y >= p.Y and pos.Y <= p.Y + s.Y
+end
+
+local function safeCall(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    local ok, a, b, c, d = pcall(fn, ...)
+    if ok then return a, b, c, d end
+    warn("[Obscura] " .. tostring(a))
+    return nil
+end
+
+local function readFlagDefault(flag, default)
+    if flag and Library.Flags[flag] ~= nil then
+        return Library.Flags[flag]
+    end
+    return default
+end
+
+local function matchesText(value, query)
+    query = tostring(query or ""):lower()
+    if query == "" then return true end
+    return tostring(value or ""):lower():find(query, 1, true) ~= nil
+end
+
+local function normalizeKeyList(keys)
+    if keys == nil then return {} end
+    if type(keys) == "table" then return keys end
+    return { keys }
+end
+
+local function iconIsImage(icon)
+    if type(icon) == "number" then return true end
+    if type(icon) ~= "string" then return false end
+    return icon:find("rbxasset", 1, true) ~= nil or icon:match("^%d+$") ~= nil
+end
+
+local function iconImage(icon)
+    if type(icon) == "number" then return "rbxassetid://" .. tostring(icon) end
+    if type(icon) == "string" and icon:match("^%d+$") then return "rbxassetid://" .. icon end
+    return tostring(icon)
+end
+
+local function makeIcon(parent, icon, opts)
+    opts = opts or {}
+    if icon == nil then return nil end
+    local size = opts.Size or UDim2.fromOffset(14, 14)
+    local z = opts.ZIndex
+    if iconIsImage(icon) then
+        return new("ImageLabel", {
+            Parent                 = parent,
+            Name                   = opts.Name or "Icon",
+            BackgroundTransparency = 1,
+            Size                   = size,
+            Position               = opts.Position or UDim2.new(),
+            AnchorPoint            = opts.AnchorPoint or Vector2.new(),
+            Image                  = iconImage(icon),
+            ImageColor3            = opts.Color or Theme.SubText,
+            ScaleType              = Enum.ScaleType.Fit,
+            ZIndex                 = z or parent.ZIndex,
+        })
+    end
+    return new("TextLabel", {
+        Parent                 = parent,
+        Name                   = opts.Name or "Icon",
+        BackgroundTransparency = 1,
+        Size                   = size,
+        Position               = opts.Position or UDim2.new(),
+        AnchorPoint            = opts.AnchorPoint or Vector2.new(),
+        Font                   = opts.Font or FONT_SB,
+        TextSize               = opts.TextSize or TEXT_SIZE,
+        TextColor3             = opts.Color or Theme.SubText,
+        TextXAlignment         = Enum.TextXAlignment.Center,
+        TextYAlignment         = Enum.TextYAlignment.Center,
+        Text                   = tostring(icon),
+        ZIndex                 = z or parent.ZIndex,
+    })
+end
+
+local function setIconColor(icon, color)
+    if not icon then return end
+    if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
+        icon.ImageColor3 = color
+    elseif icon:IsA("TextLabel") or icon:IsA("TextButton") then
+        icon.TextColor3 = color
+    end
+end
+
+local function serializeValue(value)
+    local t = typeof(value)
+    if t == "Color3" then
+        return { __type = "Color3", R = value.R, G = value.G, B = value.B }
+    elseif t == "EnumItem" then
+        return { __type = "EnumItem", EnumType = tostring(value.EnumType):gsub("^Enum%.", ""), Name = value.Name }
+    elseif t == "Vector2" then
+        return { __type = "Vector2", X = value.X, Y = value.Y }
+    elseif t == "UDim2" then
+        return {
+            __type = "UDim2",
+            XS = value.X.Scale,
+            XO = value.X.Offset,
+            YS = value.Y.Scale,
+            YO = value.Y.Offset,
+        }
+    elseif type(value) == "table" then
+        local out = {}
+        for k, v in pairs(value) do
+            out[k] = serializeValue(v)
+        end
+        return out
+    end
+    return value
+end
+
+local function deserializeValue(value)
+    if type(value) ~= "table" then return value end
+    if value.__type == "Color3" then
+        return Color3.new(tonumber(value.R) or 0, tonumber(value.G) or 0, tonumber(value.B) or 0)
+    elseif value.__type == "EnumItem" then
+        local enum = Enum[value.EnumType]
+        return enum and enum[value.Name] or nil
+    elseif value.__type == "Vector2" then
+        return Vector2.new(tonumber(value.X) or 0, tonumber(value.Y) or 0)
+    elseif value.__type == "UDim2" then
+        return UDim2.new(
+            tonumber(value.XS) or 0,
+            tonumber(value.XO) or 0,
+            tonumber(value.YS) or 0,
+            tonumber(value.YO) or 0
+        )
+    end
+    local out = {}
+    for k, v in pairs(value) do
+        out[k] = deserializeValue(v)
+    end
+    return out
+end
+
+local function settingPath(name)
+    name = tostring(name or Library.Settings.Profile or "default"):gsub("[^%w_%-]", "_")
+    return tostring(Library.Settings.Folder or "Obscura/settings") .. "/" .. name .. ".json"
+end
+
+local function ensureSettingFolder()
+    local folder = tostring(Library.Settings.Folder or "Obscura/settings")
+    if makefolder then
+        local parts = {}
+        for part in folder:gmatch("[^/\\]+") do table.insert(parts, part) end
+        local path = ""
+        for _, part in ipairs(parts) do
+            path = path == "" and part or (path .. "/" .. part)
+            pcall(function() makefolder(path) end)
+        end
+    end
+end
+
+local function sameArray(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then return false end
+    if #a ~= #b then return false end
+    for i = 1, #a do
+        if tostring(a[i]) ~= tostring(b[i]) then return false end
+    end
+    return true
 end
 
 ----------------------------------------------------------------------
@@ -280,6 +453,23 @@ end
 function Library:SetFlag(flag, value)
     if not flag then return end
     Library.Flags[flag] = value
+    if Library._flagSyncing == flag then return end
+    Library._flagSyncing = flag
+    local controls = Library.FlagControls[flag]
+    if controls then
+        for _, api in ipairs(controls) do
+            if api and api.Set then
+                pcall(function()
+                    if api.SetFlagValue then
+                        api:SetFlagValue(value, true)
+                    else
+                        api:Set(value, true)
+                    end
+                end)
+            end
+        end
+    end
+    Library._flagSyncing = nil
     local list = Library.FlagCallbacks[flag]
     if list then
         for _, fn in ipairs(list) do
@@ -297,6 +487,298 @@ end
 function Library:OnFlag(flag, fn)
     Library.FlagCallbacks[flag] = Library.FlagCallbacks[flag] or {}
     table.insert(Library.FlagCallbacks[flag], fn)
+end
+
+function Library:_registerFlagControl(flag, api)
+    if not flag or not api then return api end
+    Library.FlagControls[flag] = Library.FlagControls[flag] or {}
+    table.insert(Library.FlagControls[flag], api)
+    return api
+end
+
+function Library:ApplyFlag(flag, value, fire)
+    if fire then
+        local controls = Library.FlagControls[flag]
+        if controls and controls[1] then
+            local api = controls[1]
+            if api.SetFlagValue then
+                api:SetFlagValue(value, false)
+            elseif api.Set then
+                api:Set(value, false)
+            end
+            return
+        end
+    end
+    self:SetFlag(flag, value)
+end
+
+function Library:OnUnload(fn)
+    if type(fn) == "function" then
+        table.insert(Library.UnloadCallbacks, fn)
+    end
+    return fn
+end
+
+function Library:Track(object, cleanup)
+    if typeof(object) == "RBXScriptConnection" then
+        return register(object)
+    end
+    if type(cleanup) == "function" then
+        self:OnUnload(function() cleanup(object) end)
+    elseif typeof(object) == "Instance" then
+        self:OnUnload(function()
+            if object.Parent then object:Destroy() end
+        end)
+    end
+    return object
+end
+
+function Library:SetTheme(theme, apply)
+    theme = theme or {}
+    local old = {}
+    for k, v in pairs(Theme) do old[k] = v end
+    for k, v in pairs(theme) do
+        if Theme[k] ~= nil and typeof(v) == "Color3" then
+            Theme[k] = v
+        end
+    end
+    Library._themeVersion += 1
+    if apply == false or not Library.ScreenGui then return end
+    for _, inst in ipairs(Library.ScreenGui:GetDescendants()) do
+        if inst:IsA("Frame") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+            for k, v in pairs(old) do
+                if inst.BackgroundColor3 == v then inst.BackgroundColor3 = Theme[k] end
+            end
+        end
+        if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+            for k, v in pairs(old) do
+                if inst.TextColor3 == v then inst.TextColor3 = Theme[k] end
+            end
+        end
+        if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+            for k, v in pairs(old) do
+                if inst.ImageColor3 == v then inst.ImageColor3 = Theme[k] end
+            end
+        end
+        if inst:IsA("UIStroke") then
+            for k, v in pairs(old) do
+                if inst.Color == v then inst.Color = Theme[k] end
+            end
+        end
+    end
+end
+
+function Library:SetFont(font, medium, semibold, bold)
+    if type(font) == "table" then
+        FONT = font.Regular or font.Font or FONT
+        FONT_M = font.Medium or font.Font or FONT_M
+        FONT_SB = font.Semibold or font.SemiBold or font.Bold or FONT_SB
+        FONT_B = font.Bold or font.Semibold or FONT_B
+    else
+        FONT = font or FONT
+        FONT_M = medium or font or FONT_M
+        FONT_SB = semibold or medium or font or FONT_SB
+        FONT_B = bold or semibold or medium or font or FONT_B
+    end
+    if Library.ScreenGui then
+        for _, inst in ipairs(Library.ScreenGui:GetDescendants()) do
+            if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+                inst.Font = FONT
+            end
+        end
+    end
+end
+
+function Library:GetSettingsSnapshot()
+    local flags = {}
+    for k, v in pairs(Library.Flags) do
+        flags[k] = serializeValue(v)
+    end
+    local theme = {}
+    for k, v in pairs(Theme) do
+        theme[k] = serializeValue(v)
+    end
+    return {
+        Name = Library.Name,
+        Version = Library.Version,
+        SavedAt = os.time(),
+        Flags = flags,
+        Theme = theme,
+        Font = serializeValue(FONT),
+        Premium = {
+            Unlocked = Library.Premium.Unlocked,
+            Owned = serializeValue(Library.Premium.Owned),
+        },
+    }
+end
+
+function Library:ApplySettings(data)
+    if type(data) ~= "table" then return false end
+    if data.Theme then
+        local theme = {}
+        for k, v in pairs(data.Theme) do
+            theme[k] = deserializeValue(v)
+        end
+        self:SetTheme(theme)
+    end
+    if data.Font then
+        local font = deserializeValue(data.Font)
+        if font then self:SetFont(font) end
+    end
+    if data.Premium then
+        Library.Premium.Unlocked = data.Premium.Unlocked and true or false
+        Library.Premium.Owned = deserializeValue(data.Premium.Owned or {}) or {}
+    end
+    local flags = data.Flags or data
+    for k, v in pairs(flags) do
+        self:ApplyFlag(k, deserializeValue(v), true)
+    end
+    return true
+end
+
+function Library:SaveSetting(name)
+    ensureSettingFolder()
+    local path = settingPath(name)
+    local json = HttpService:JSONEncode(self:GetSettingsSnapshot())
+    if writefile then
+        writefile(path, json)
+        return true, path
+    end
+    return false, json
+end
+
+function Library:LoadSetting(name)
+    local path = settingPath(name)
+    if readfile and isfile and isfile(path) then
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(readfile(path))
+        end)
+        if ok then return self:ApplySettings(data), path end
+        return false, data
+    end
+    return false, "setting not found"
+end
+
+function Library:DeleteSetting(name)
+    local path = settingPath(name)
+    if delfile and isfile and isfile(path) then
+        delfile(path)
+        return true, path
+    end
+    return false, "setting not found"
+end
+
+function Library:ListSettings()
+    local folder = tostring(Library.Settings.Folder or "Obscura/settings")
+    local out = {}
+    if listfiles then
+        local ok, files = pcall(function() return listfiles(folder) end)
+        if ok then
+            for _, path in ipairs(files) do
+                local name = tostring(path):match("([^/\\]+)%.json$")
+                if name then table.insert(out, name) end
+            end
+        end
+    end
+    return out
+end
+
+Library.SaveConfig = Library.SaveSetting
+Library.LoadConfig = Library.LoadSetting
+
+function Library:SetPremium(state)
+    Library.Premium.Unlocked = state and true or false
+end
+
+function Library:UnlockPremium(feature)
+    if feature then
+        Library.Premium.Owned[tostring(feature)] = true
+    else
+        Library.Premium.Unlocked = true
+    end
+end
+
+function Library:IsPremium(feature)
+    if Library.Premium.Unlocked then return true end
+    if not feature then return false end
+    return Library.Premium.Owned[tostring(feature)] and true or false
+end
+
+function Library:ShowPurchase(opts)
+    opts = opts or {}
+    local feature = tostring(opts.Feature or opts.Text or "Premium")
+    local price = opts.Price or Library.Premium.Prices[feature] or "Premium"
+    local modal
+    modal = self:CreateModal({
+        Title = "Premium",
+        Text = feature .. "\n" .. tostring(price),
+        Buttons = {
+            {
+                Text = "Buy",
+                Callback = function()
+                    local ok = safeCall(opts.PurchaseCallback or Library.Premium.PurchaseCallback, feature, price)
+                    if ok == nil or ok == true then
+                        Library:UnlockPremium(feature)
+                        Library:Notify({ Title = "Premium", Text = feature .. " unlocked", Duration = 3 })
+                    end
+                    if modal then modal:Close() end
+                end,
+            },
+            { Text = "Later", Close = true },
+        },
+    })
+    return modal
+end
+
+function Library:_premiumAllowed(opts)
+    opts = opts or {}
+    if not opts.Premium and not opts.Locked then return true end
+    local feature = opts.Feature or opts.Text or "Premium"
+    if self:IsPremium(feature) then return true end
+    self:ShowPurchase({
+        Feature = feature,
+        Price = opts.Price,
+        PurchaseCallback = opts.PurchaseCallback,
+    })
+    return false
+end
+
+function Library:RegisterKeybind(opts)
+    opts = opts or {}
+    local bind = {
+        Name = tostring(opts.Name or opts.Text or opts.Flag or "Keybind"),
+        Key = readFlagDefault(opts.Flag, opts.Key or opts.Default),
+        Mode = tostring(opts.Mode or "Toggle"):lower(),
+        Flag = opts.Flag,
+        Callback = opts.Callback or function() end,
+        OnChanged = opts.OnChanged or function() end,
+        Enabled = opts.Enabled ~= false,
+        IgnoreProcessed = opts.IgnoreProcessed and true or false,
+        State = false,
+    }
+    function bind:Set(key, silent)
+        self.Key = key
+        if self.Flag then Library:SetFlag(self.Flag, key) end
+        if not silent then task.spawn(self.OnChanged, key) end
+    end
+    function bind:Get()
+        return self.Key
+    end
+    function bind:SetMode(mode)
+        self.Mode = tostring(mode or "Toggle"):lower()
+    end
+    function bind:Destroy()
+        self.Enabled = false
+        for i, item in ipairs(Library.Keybinds) do
+            if item == self then
+                table.remove(Library.Keybinds, i)
+                break
+            end
+        end
+    end
+    table.insert(Library.Keybinds, bind)
+    if bind.Flag and bind.Key then Library:SetFlag(bind.Flag, bind.Key) end
+    return bind
 end
 
 ----------------------------------------------------------------------
@@ -355,6 +837,17 @@ end
 -- DESTROY / UNLOAD
 ----------------------------------------------------------------------
 function Library:Destroy()
+    for _, bind in ipairs(Library.Keybinds) do
+        if bind.Mode == "hold" and bind.State then
+            safeCall(bind.Callback, false, bind)
+        elseif bind.Mode == "toggle" and bind.State then
+            safeCall(bind.Callback, false, bind)
+        end
+        bind.Enabled = false
+    end
+    for i = #Library.UnloadCallbacks, 1, -1 do
+        safeCall(Library.UnloadCallbacks[i])
+    end
     for _, c in ipairs(Library.Connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -366,10 +859,16 @@ function Library:Destroy()
     Library.Windows           = {}
     Library.Flags             = {}
     Library.FlagCallbacks     = {}
+    Library.FlagControls      = {}
+    Library.UnloadCallbacks   = {}
+    Library.Keybinds          = {}
+    Library.ActiveListItems   = {}
     Library.MobileButton      = nil
+    Library.NotifyHolder      = nil
     Library._activeDropdown   = nil
     Library._activeColorpicker= nil
     Library._listeningKeybind = nil
+    Library._activeModal      = nil
 end
 
 ----------------------------------------------------------------------
@@ -404,6 +903,31 @@ register(UIS.InputBegan:Connect(function(input, processed)
     end
 end))
 
+register(UIS.InputBegan:Connect(function(input, processed)
+    for _, bind in ipairs(Library.Keybinds) do
+        if bind.Enabled and (bind.IgnoreProcessed or not processed) and isKeyPressed(bind.Key, input) then
+            if bind.Mode == "toggle" then
+                bind.State = not bind.State
+                task.spawn(bind.Callback, bind.State, bind)
+            elseif bind.Mode == "hold" then
+                bind.State = true
+                task.spawn(bind.Callback, true, bind)
+            elseif bind.Mode == "always" or bind.Mode == "press" then
+                task.spawn(bind.Callback, bind)
+            end
+        end
+    end
+end))
+
+register(UIS.InputEnded:Connect(function(input)
+    for _, bind in ipairs(Library.Keybinds) do
+        if bind.Enabled and bind.Mode == "hold" and isKeyPressed(bind.Key, input) then
+            bind.State = false
+            task.spawn(bind.Callback, false, bind)
+        end
+    end
+end))
+
 ----------------------------------------------------------------------
 -- WINDOW
 ----------------------------------------------------------------------
@@ -418,6 +942,10 @@ function Library:CreateWindow(opts)
     local minSize  = opts.MinSize  or Vector2.new(480, 340)
     local toggleKey= opts.ToggleKey or Enum.KeyCode.RightShift
     local mobile   = opts.MobileButton ~= false
+    local sidebarW = tonumber(opts.SidebarWidth) or 130
+    local responsive = opts.Responsive ~= false
+    local searchEnabled = opts.Search ~= false
+    local titleIcon = opts.TitleIcon or opts.Icon
 
     local sg = getScreenGui()
 
@@ -471,29 +999,43 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
     })
 
-    new("TextLabel", {
+    local titleX = 22
+    local titleIconObj
+    if titleIcon then
+        titleIconObj = makeIcon(titleBar, titleIcon, {
+            Position = UDim2.new(0, 22, 0.5, 0),
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.fromOffset(14, 14),
+            Color = Theme.Text,
+        })
+        titleX = 42
+    end
+
+    local titleLabel = new("TextLabel", {
         Parent           = titleBar,
         Name             = "Title",
-        Position         = UDim2.new(0, 22, 0, 0),
-        Size             = UDim2.new(1, -180, 1, 0),
+        Position         = UDim2.new(0, titleX, 0, 0),
+        Size             = UDim2.new(0.48, -titleX, 1, 0),
         BackgroundTransparency = 1,
         Font             = FONT_SB,
         TextSize         = TEXT_SIZE_TITLE,
         TextColor3       = Theme.Text,
         TextXAlignment   = Enum.TextXAlignment.Left,
         Text             = title,
+        TextTruncate     = Enum.TextTruncate.AtEnd,
     })
-    new("TextLabel", {
+    local subtitleLabel = new("TextLabel", {
         Parent           = titleBar,
         Name             = "Subtitle",
-        Position         = UDim2.new(0, 22 + (#title * 8) + 8, 0, 0),
-        Size             = UDim2.new(0, 200, 1, 0),
+        Position         = UDim2.new(0.48, 8, 0, 0),
+        Size             = UDim2.new(0.52, -110, 1, 0),
         BackgroundTransparency = 1,
         Font             = FONT,
         TextSize         = TEXT_SIZE_SMALL,
         TextColor3       = Theme.DimText,
         TextXAlignment   = Enum.TextXAlignment.Left,
         Text             = subtitle,
+        TextTruncate     = Enum.TextTruncate.AtEnd,
     })
 
     -- Title bar buttons
@@ -555,7 +1097,7 @@ function Library:CreateWindow(opts)
     local sidebar = new("Frame", {
         Parent           = body,
         Name             = "Sidebar",
-        Size             = UDim2.new(0, 130, 1, 0),
+        Size             = UDim2.new(0, sidebarW, 1, 0),
         BackgroundColor3 = Theme.Bg2,
         BorderSizePixel  = 0,
     })
@@ -567,10 +1109,44 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
     })
 
+    local searchFrame, searchBox
+    if searchEnabled then
+        searchFrame = new("Frame", {
+            Parent           = sidebar,
+            Name             = "Search",
+            Size             = UDim2.new(1, 0, 0, 32),
+            BackgroundColor3 = Theme.Bg2,
+            BorderSizePixel  = 0,
+        })
+        local box = new("Frame", {
+            Parent           = searchFrame,
+            Size             = UDim2.new(1, -16, 0, 22),
+            Position         = UDim2.fromOffset(8, 6),
+            BackgroundColor3 = Theme.Bg3,
+            BorderSizePixel  = 0,
+        })
+        stroke(box, Theme.Border, 1)
+        searchBox = new("TextBox", {
+            Parent                 = box,
+            BackgroundTransparency = 1,
+            Position               = UDim2.fromOffset(7, 0),
+            Size                   = UDim2.new(1, -14, 1, 0),
+            Font                   = FONT,
+            TextSize               = TEXT_SIZE_SMALL,
+            TextColor3             = Theme.Text,
+            PlaceholderColor3      = Theme.DimText,
+            PlaceholderText        = "Search",
+            Text                   = "",
+            ClearTextOnFocus       = false,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+        })
+    end
+
     local tabList = new("ScrollingFrame", {
         Parent                  = sidebar,
         Name                    = "TabList",
-        Size                    = UDim2.new(1, 0, 1, -40),
+        Position                = searchEnabled and UDim2.fromOffset(0, 32) or UDim2.fromOffset(0, 0),
+        Size                    = searchEnabled and UDim2.new(1, 0, 1, -72) or UDim2.new(1, 0, 1, -40),
         BackgroundTransparency  = 1,
         BorderSizePixel         = 0,
         ScrollBarThickness      = 0,
@@ -613,8 +1189,8 @@ function Library:CreateWindow(opts)
     local content = new("Frame", {
         Parent                 = body,
         Name                   = "Content",
-        Position               = UDim2.fromOffset(130, 0),
-        Size                   = UDim2.new(1, -130, 1, 0),
+        Position               = UDim2.fromOffset(sidebarW, 0),
+        Size                   = UDim2.new(1, -sidebarW, 1, 0),
         BackgroundTransparency = 1,
     })
 
@@ -637,12 +1213,52 @@ function Library:CreateWindow(opts)
         Sidebar   = sidebar,
         TabList   = tabList,
         Content   = content,
+        SearchBox = searchBox,
+        TitleLabel = titleLabel,
+        SubtitleLabel = subtitleLabel,
+        TitleIcon = titleIconObj,
+        MinSize   = minSize,
+        BaseSize  = size,
+        SidebarWidth = sidebarW,
+        Responsive = responsive,
         Tabs      = {},
         ActiveTab = nil,
         Title     = title,
     }, Window)
 
     table.insert(Library.Windows, self)
+    if searchBox then
+        register(searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+            self:ApplySearch(searchBox.Text)
+        end))
+    end
+    register(root:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        self:UpdateLayout()
+    end))
+    if responsive then
+        local elapsed = 0
+        register(RS.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            if elapsed >= 0.25 then
+                elapsed = 0
+                self:UpdateLayout()
+            end
+        end))
+    end
+    self:UpdateLayout()
+    if opts.KeySystem then
+        local keyOpts = opts.KeySystem
+        local original = keyOpts.Callback
+        root.Visible = false
+        keyOpts.Callback = function(ok, value)
+            if ok then
+                root.Visible = true
+                Library.Open = true
+            end
+            safeCall(original, ok, value)
+        end
+        Library:CreateKeySystem(keyOpts)
+    end
     return self
 end
 
@@ -655,12 +1271,15 @@ Tab.__index = Tab
 function Window:CreateTab(name, opts)
     opts = opts or {}
     name = tostring(name or "Tab")
+    local icon = opts.Icon or opts.Image or opts.Symbol
+    local iconPos = tostring(opts.IconPosition or opts.IconSide or "left"):lower()
+    local tabHeight = (icon and (iconPos == "top" or iconPos == "bottom")) and 42 or 28
 
     -- Sidebar button
     local btn = new("TextButton", {
         Parent           = self.TabList,
         Name             = name,
-        Size             = UDim2.new(1, 0, 0, 28),
+        Size             = UDim2.new(1, 0, 0, tabHeight),
         BackgroundColor3 = Theme.Bg2,
         BorderSizePixel  = 0,
         Text             = "",
@@ -677,16 +1296,65 @@ function Window:CreateTab(name, opts)
         Visible          = false,
     })
 
+    local labelPos = UDim2.fromOffset(12, 0)
+    local labelSize = UDim2.new(1, -16, 1, 0)
+    local labelAlign = Enum.TextXAlignment.Left
+    local iconObj
+    if icon then
+        if iconPos == "right" then
+            iconObj = makeIcon(btn, icon, {
+                Position = UDim2.new(1, -18, 0.5, 0),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(14, 14),
+            })
+            labelSize = UDim2.new(1, -34, 1, 0)
+        elseif iconPos == "top" then
+            iconObj = makeIcon(btn, icon, {
+                Position = UDim2.new(0.5, 0, 0, 6),
+                AnchorPoint = Vector2.new(0.5, 0),
+                Size = UDim2.fromOffset(14, 14),
+            })
+            labelPos = UDim2.fromOffset(0, 22)
+            labelSize = UDim2.new(1, 0, 0, 18)
+            labelAlign = Enum.TextXAlignment.Center
+        elseif iconPos == "bottom" then
+            iconObj = makeIcon(btn, icon, {
+                Position = UDim2.new(0.5, 0, 1, -6),
+                AnchorPoint = Vector2.new(0.5, 1),
+                Size = UDim2.fromOffset(14, 14),
+            })
+            labelPos = UDim2.fromOffset(0, 2)
+            labelSize = UDim2.new(1, 0, 0, 20)
+            labelAlign = Enum.TextXAlignment.Center
+        elseif iconPos == "only" then
+            iconObj = makeIcon(btn, icon, {
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(16, 16),
+            })
+            labelSize = UDim2.new()
+        else
+            iconObj = makeIcon(btn, icon, {
+                Position = UDim2.new(0, 16, 0.5, 0),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(14, 14),
+            })
+            labelPos = UDim2.fromOffset(28, 0)
+            labelSize = UDim2.new(1, -32, 1, 0)
+        end
+    end
+
     local label = new("TextLabel", {
         Parent                 = btn,
         BackgroundTransparency = 1,
-        Position               = UDim2.fromOffset(12, 0),
-        Size                   = UDim2.new(1, -16, 1, 0),
+        Position               = labelPos,
+        Size                   = labelSize,
         Font                   = FONT_M,
         TextSize               = TEXT_SIZE,
         TextColor3             = Theme.SubText,
-        TextXAlignment         = Enum.TextXAlignment.Left,
+        TextXAlignment         = labelAlign,
         Text                   = name,
+        TextTruncate           = Enum.TextTruncate.AtEnd,
     })
 
     -- Tab page
@@ -738,6 +1406,10 @@ function Window:CreateTab(name, opts)
         Right     = right,
         Indicator = indicator,
         Label     = label,
+        Icon      = iconObj,
+        IconPosition = iconPos,
+        IconDefaultPosition = iconObj and iconObj.Position or nil,
+        IconDefaultAnchorPoint = iconObj and iconObj.AnchorPoint or nil,
         Sections  = {},
     }, Tab)
 
@@ -768,9 +1440,140 @@ function Window:SelectTab(tab)
         tween(t.Label, 0.15, {
             TextColor3 = active and Theme.Text or Theme.SubText,
         })
+        setIconColor(t.Icon, active and Theme.Text or Theme.SubText)
         t.Label.Font = active and FONT_SB or FONT_M
     end
     self.ActiveTab = tab
+end
+
+function Tab:UpdateLayout(stacked)
+    if stacked then
+        self.Left.Size = UDim2.new(1, 0, 0.5, -4)
+        self.Right.Position = UDim2.new(0, 0, 0.5, 4)
+        self.Right.Size = UDim2.new(1, 0, 0.5, -4)
+    else
+        self.Left.Size = UDim2.new(0.5, -5, 1, 0)
+        self.Right.Position = UDim2.new(0.5, 5, 0, 0)
+        self.Right.Size = UDim2.new(0.5, -5, 1, 0)
+    end
+end
+
+function Window:UpdateLayout()
+    if not self.Root or not self.Root.Parent then return end
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+    if self.Responsive and self.BaseSize.X.Scale == 0 and self.BaseSize.Y.Scale == 0 then
+        local maxW = math.max(320, viewport.X - 24)
+        local maxH = math.max(260, viewport.Y - 24)
+        local minW = math.min(self.MinSize.X, maxW)
+        local minH = math.min(self.MinSize.Y, maxH)
+        local w = clamp(self.BaseSize.X.Offset, minW, maxW)
+        local h = clamp(self.BaseSize.Y.Offset, minH, maxH)
+        self.Root.Size = UDim2.fromOffset(w, h)
+    end
+    local w = self.Root.AbsoluteSize.X
+    local side = self.SidebarWidth
+    if w < 440 then
+        side = 84
+    elseif w < 560 then
+        side = 108
+    end
+    self.Sidebar.Size = UDim2.new(0, side, 1, 0)
+    self.Content.Position = UDim2.fromOffset(side, 0)
+    self.Content.Size = UDim2.new(1, -side, 1, 0)
+    if self.SubtitleLabel then
+        self.SubtitleLabel.Visible = w >= 500
+    end
+    if self.TitleLabel then
+        local x = self.TitleLabel.Position.X.Offset
+        self.TitleLabel.Size = (w >= 500)
+            and UDim2.new(0.48, -x, 1, 0)
+            or UDim2.new(1, -118, 1, 0)
+    end
+    local stacked = (w - side) < 390
+    for _, tab in ipairs(self.Tabs) do
+        if tab.Icon and tab.IconPosition ~= "only" then
+            tab.Label.Visible = side > 88
+            if side <= 88 then
+                tab.Icon.Position = UDim2.new(0.5, 0, 0.5, 0)
+                tab.Icon.AnchorPoint = Vector2.new(0.5, 0.5)
+            else
+                tab.Icon.Position = tab.IconDefaultPosition
+                tab.Icon.AnchorPoint = tab.IconDefaultAnchorPoint
+            end
+        end
+        tab:UpdateLayout(stacked)
+    end
+end
+
+function Window:ApplySearch(query)
+    query = tostring(query or "")
+    local firstVisible = nil
+    for _, tab in ipairs(self.Tabs) do
+        local tabMatch = matchesText(tab.Name, query)
+        local sectionMatch = false
+        for _, section in ipairs(tab.Sections) do
+            local visible = query == "" or tabMatch or matchesText(section.Name, query)
+            section.Frame.Visible = visible
+            if visible then sectionMatch = true end
+        end
+        local visible = query == "" or tabMatch or sectionMatch
+        tab.Button.Visible = visible
+        if visible and not firstVisible then firstVisible = tab end
+    end
+    if self.ActiveTab and not self.ActiveTab.Button.Visible and firstVisible then
+        self:SelectTab(firstVisible)
+    end
+end
+
+function Window:CreateSettingsTab(opts)
+    opts = opts or {}
+    local tab = self:CreateTab(opts.Name or "Settings", { Icon = opts.Icon or opts.TabIcon or "*" })
+    local menu = tab:CreateSection(opts.MenuTitle or "Menu", "left")
+    local colors = opts.Colors or { "Bg", "Bg2", "Bg3", "Hover", "Border", "BorderHi", "Text", "SubText", "Accent" }
+    for _, key in ipairs(colors) do
+        if Theme[key] then
+            menu:AddColorpicker({
+                Text = key,
+                Default = Theme[key],
+                Flag = "setting_theme_" .. key,
+                Callback = function(color)
+                    Library:SetTheme({ [key] = color })
+                end,
+            })
+        end
+    end
+    menu:AddDropdown({
+        Text = "Font",
+        Options = opts.Fonts or { "Gotham", "GothamMedium", "GothamSemibold", "SourceSans", "RobotoMono" },
+        Default = opts.DefaultFont or "Gotham",
+        Flag = "setting_font",
+        Callback = function(name)
+            local enum = Enum.Font[name]
+            if enum then Library:SetFont(enum) end
+        end,
+    })
+    local setting = tab:CreateSection(opts.SettingTitle or "Setting", "right")
+    setting:AddButton({
+        Text = "Save setting",
+        Callback = function()
+            local ok, result = Library:SaveSetting(opts.Profile or Library.Settings.Profile)
+            Library:Notify({ Title = "Setting", Text = ok and "Saved" or tostring(result), Duration = 3 })
+        end,
+    })
+    setting:AddButton({
+        Text = "Load setting",
+        Callback = function()
+            local ok, result = Library:LoadSetting(opts.Profile or Library.Settings.Profile)
+            Library:Notify({ Title = "Setting", Text = ok and "Loaded" or tostring(result), Duration = 3 })
+        end,
+    })
+    setting:AddButton({
+        Text = "Unload",
+        Callback = function()
+            Library:Destroy()
+        end,
+    })
+    return tab
 end
 
 ----------------------------------------------------------------------
@@ -864,6 +1667,24 @@ local function attachHover(btn, normal, hover, strokeInst)
         tween(btn, 0.12, { BackgroundColor3 = normal })
         if strokeInst then strokeInst.Color = Theme.Border end
     end)
+end
+
+local function addPremiumBadge(parent, opts)
+    opts = opts or {}
+    if not opts.Premium and not opts.Locked then return nil end
+    return new("TextLabel", {
+        Parent                 = parent,
+        AnchorPoint            = Vector2.new(1, 0.5),
+        Position               = UDim2.new(1, -8, 0.5, 0),
+        Size                   = UDim2.fromOffset(28, 14),
+        BackgroundColor3       = Theme.Bg,
+        BorderSizePixel        = 0,
+        Font                   = FONT_B,
+        TextSize               = 9,
+        TextColor3             = Theme.Premium,
+        Text                   = "PRO",
+        ZIndex                 = parent.ZIndex + 1,
+    })
 end
 
 ----------------------------------------------------------------------
@@ -980,6 +1801,7 @@ function Section:AddButton(opts)
         TextXAlignment         = Enum.TextXAlignment.Center,
         Text                   = text,
     })
+    addPremiumBadge(btn, opts)
 
     -- chevron right
     new("TextLabel", {
@@ -997,6 +1819,7 @@ function Section:AddButton(opts)
     attachHover(btn, Theme.Bg3, Theme.Hover, s)
 
     btn.MouseButton1Click:Connect(function()
+        if not Library:_premiumAllowed(opts) then return end
         -- click flash
         local orig = btn.BackgroundColor3
         btn.BackgroundColor3 = Theme.Accent
@@ -1011,7 +1834,10 @@ function Section:AddButton(opts)
     local api = {}
     function api:SetText(t) label.Text = tostring(t); text = label.Text end
     function api:SetCallback(fn) callback = fn or function() end end
-    function api:Fire() task.spawn(callback) end
+    function api:Fire()
+        if not Library:_premiumAllowed(opts) then return end
+        task.spawn(callback)
+    end
     return api
 end
 
@@ -1024,6 +1850,7 @@ function Section:AddToggle(opts)
     local default  = opts.Default and true or false
     local flag     = opts.Flag
     local callback = opts.Callback or function() end
+    default = readFlagDefault(flag, default) and true or false
 
     local btn = new("TextButton", {
         Parent           = self.Content,
@@ -1065,6 +1892,7 @@ function Section:AddToggle(opts)
         TextXAlignment         = Enum.TextXAlignment.Left,
         Text                   = text,
     })
+    addPremiumBadge(btn, opts)
 
     local state = default
     local api = {}
@@ -1076,9 +1904,11 @@ function Section:AddToggle(opts)
     end
 
     function api:Set(v, silent)
+        if not silent and v and not Library:_premiumAllowed(opts) then return end
         state = v and true or false
         render()
         if flag then Library:SetFlag(flag, state) end
+        if opts.ActiveList ~= false then Library:SetActive(text, state) end
         if not silent then task.spawn(callback, state) end
     end
     function api:Get() return state end
@@ -1090,6 +1920,12 @@ function Section:AddToggle(opts)
     btn.MouseButton1Click:Connect(function() api:Toggle() end)
 
     api:Set(default, true)
+    Library:_registerFlagControl(flag, api)
+    if opts.Unload ~= false then
+        Library:OnUnload(function()
+            if state then api:Set(false) end
+        end)
+    end
     return api
 end
 
@@ -1106,6 +1942,7 @@ function Section:AddSlider(opts)
     local suffix   = tostring(opts.Suffix or "")
     local flag     = opts.Flag
     local callback = opts.Callback or function() end
+    default = clamp(tonumber(readFlagDefault(flag, default)) or default, minV, maxV)
 
     local frame = new("Frame", {
         Parent           = self.Content,
@@ -1139,6 +1976,7 @@ function Section:AddSlider(opts)
         TextXAlignment         = Enum.TextXAlignment.Right,
         Text                   = tostring(default) .. suffix,
     })
+    addPremiumBadge(frame, opts)
 
     -- track
     local track = new("Frame", {
@@ -1169,7 +2007,8 @@ function Section:AddSlider(opts)
     local api = {}
 
     local function render(snap)
-        local pct = (value - minV) / (maxV - minV)
+        local range = maxV - minV
+        local pct = range ~= 0 and (value - minV) / range or 0
         if snap then
             fill.Size      = UDim2.new(pct, 0, 1, 0)
             thumb.Position = UDim2.new(pct, 0, 0.5, 0)
@@ -1194,6 +2033,7 @@ function Section:AddSlider(opts)
     -- input
     local dragging = false
     local function updateFromInput(input)
+        if not Library:_premiumAllowed(opts) then return end
         local abs = track.AbsolutePosition.X
         local size = track.AbsoluteSize.X
         local x = clamp(input.Position.X - abs, 0, size)
@@ -1231,6 +2071,7 @@ function Section:AddSlider(opts)
 
     attachHover(frame, Theme.Bg3, Theme.Hover, s)
     api:Set(default, true)
+    Library:_registerFlagControl(flag, api)
     return api
 end
 
@@ -1244,6 +2085,9 @@ function Section:AddDropdown(opts)
     local default  = opts.Default
     local flag     = opts.Flag
     local callback = opts.Callback or function() end
+    local provider = opts.Provider or opts.GetOptions or opts.DynamicOptions
+    local refreshRate = tonumber(opts.RefreshRate or opts.UpdateRate) or 1
+    default = readFlagDefault(flag, default)
 
     local frame = new("Frame", {
         Parent           = self.Content,
@@ -1296,6 +2140,7 @@ function Section:AddDropdown(opts)
         TextColor3             = Theme.SubText,
         Text                   = "v",
     })
+    addPremiumBadge(frame, opts)
 
     -- popup list
     local list = new("Frame", {
@@ -1412,12 +2257,23 @@ function Section:AddDropdown(opts)
                 tween(item, 0.1, { BackgroundColor3 = Theme.Bg2 })
             end)
             item.MouseButton1Click:Connect(function()
+                if not Library:_premiumAllowed(opts) then return end
                 api:Set(opt)
                 api:Close()
             end)
         end
-        if not keepSelection then api:Set(nil, true) end
+        if keepSelection and current ~= nil then
+            local found = false
+            for _, opt in ipairs(options) do
+                if opt == current then found = true break end
+            end
+            if not found then api:Set(nil, true) end
+        elseif not keepSelection then
+            api:Set(nil, true)
+        end
+        if list.Visible then api:UpdatePosition() end
     end
+    api.SetOptions = api.Refresh
 
     btn.MouseEnter:Connect(function()
         tween(btn, 0.12, { BackgroundColor3 = Theme.Hover })
@@ -1437,6 +2293,24 @@ function Section:AddDropdown(opts)
     api:Refresh(options, true)
     if default ~= nil then api:Set(default, true) end
     render()
+    Library:_registerFlagControl(flag, api)
+    if type(provider) == "function" then
+        local elapsed = refreshRate
+        local function refreshFromProvider()
+            local newOptions = safeCall(provider, api)
+            if type(newOptions) == "table" then
+                api:Refresh(newOptions, true)
+            end
+        end
+        refreshFromProvider()
+        register(RS.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            if elapsed >= refreshRate then
+                elapsed = 0
+                refreshFromProvider()
+            end
+        end))
+    end
     return api
 end
 
@@ -1451,6 +2325,9 @@ function Section:AddMultiDropdown(opts)
     local maxSel   = tonumber(opts.Max) or math.huge
     local flag     = opts.Flag
     local callback = opts.Callback or function() end
+    local provider = opts.Provider or opts.GetOptions or opts.DynamicOptions
+    local refreshRate = tonumber(opts.RefreshRate or opts.UpdateRate) or 1
+    default = readFlagDefault(flag, default) or {}
 
     local frame = new("Frame", {
         Parent                 = self.Content,
@@ -1504,6 +2381,7 @@ function Section:AddMultiDropdown(opts)
         TextColor3             = Theme.SubText,
         Text                   = "v",
     })
+    addPremiumBadge(frame, opts)
 
     local list = new("Frame", {
         Parent           = getScreenGui(),
@@ -1558,7 +2436,8 @@ function Section:AddMultiDropdown(opts)
 
     function api:Set(tbl, silent)
         selected = {}
-        for _, v in ipairs(tbl or {}) do selected[v] = true end
+        local source = type(tbl) == "table" and tbl or (tbl ~= nil and { tbl } or {})
+        for _, v in ipairs(source) do selected[v] = true end
         render()
         if flag then Library:SetFlag(flag, self:Get()) end
         if not silent then task.spawn(callback, self:Get()) end
@@ -1569,6 +2448,7 @@ function Section:AddMultiDropdown(opts)
         return arr
     end
     function api:Toggle(opt)
+        if not Library:_premiumAllowed(opts) then return end
         if selected[opt] then
             selected[opt] = nil
         else
@@ -1660,8 +2540,14 @@ function Section:AddMultiDropdown(opts)
             item.MouseButton1Click:Connect(function() api:Toggle(opt) end)
             items[opt] = { Box = box, Fill = f, Label = lbl }
         end
+        local valid = {}
+        for _, opt in ipairs(options) do valid[opt] = true end
+        for opt in pairs(selected) do
+            if not valid[opt] then selected[opt] = nil end
+        end
         render()
     end
+    api.SetOptions = api.Refresh
 
     btn.MouseEnter:Connect(function() tween(btn, 0.12, { BackgroundColor3 = Theme.Hover }); s.Color = Theme.BorderHi end)
     btn.MouseLeave:Connect(function() tween(btn, 0.12, { BackgroundColor3 = Theme.Bg3 }); s.Color = Theme.Border end)
@@ -1674,6 +2560,24 @@ function Section:AddMultiDropdown(opts)
 
     api:Refresh(options)
     api:Set(default, true)
+    Library:_registerFlagControl(flag, api)
+    if type(provider) == "function" then
+        local elapsed = refreshRate
+        local function refreshFromProvider()
+            local newOptions = safeCall(provider, api)
+            if type(newOptions) == "table" then
+                api:Refresh(newOptions)
+            end
+        end
+        refreshFromProvider()
+        register(RS.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            if elapsed >= refreshRate then
+                elapsed = 0
+                refreshFromProvider()
+            end
+        end))
+    end
     return api
 end
 
@@ -1689,6 +2593,7 @@ function Section:AddTextbox(opts)
     local numeric     = opts.Numeric and true or false
     local flag        = opts.Flag
     local callback    = opts.Callback or function() end
+    default = tostring(readFlagDefault(flag, default) or "")
 
     local frame = new("Frame", {
         Parent                 = self.Content,
@@ -1732,19 +2637,34 @@ function Section:AddTextbox(opts)
         ClipsDescendants       = true,
     })
 
+    local settingText = false
     local api = {}
     function api:Set(t, silent)
         t = tostring(t)
         if numeric then t = (tonumber(t) and t) or "" end
+        settingText = true
         input.Text = t
+        settingText = false
         if flag then Library:SetFlag(flag, t) end
         if not silent then task.spawn(callback, t) end
     end
     function api:Get() return input.Text end
 
+    if opts.Realtime or opts.Live then
+        register(input:GetPropertyChangedSignal("Text"):Connect(function()
+            if settingText then return end
+            if flag then Library:SetFlag(flag, input.Text) end
+            task.spawn(callback, input.Text, false)
+        end))
+    end
+
     input.Focused:Connect(function() s.Color = Theme.BorderHi end)
     input.FocusLost:Connect(function(enter)
         s.Color = Theme.Border
+        if not Library:_premiumAllowed(opts) then
+            input.Text = default
+            return
+        end
         if numeric and tonumber(input.Text) == nil then
             input.Text = ""
         end
@@ -1753,7 +2673,16 @@ function Section:AddTextbox(opts)
     end)
 
     if default ~= "" and flag then Library:SetFlag(flag, default) end
+    Library:_registerFlagControl(flag, api)
     return api
+end
+
+function Section:AddSearchBar(opts)
+    opts = opts or {}
+    opts.Text = opts.Text or "Search"
+    opts.Placeholder = opts.Placeholder or "Search"
+    opts.Realtime = true
+    return self:AddTextbox(opts)
 end
 
 ----------------------------------------------------------------------
@@ -1767,6 +2696,7 @@ function Section:AddKeybind(opts)
     local flag        = opts.Flag
     local callback    = opts.Callback or function() end
     local onChanged   = opts.OnChanged or function() end
+    default = readFlagDefault(flag, default)
 
     local frame = new("Frame", {
         Parent           = self.Content,
@@ -1871,6 +2801,7 @@ function Section:AddKeybind(opts)
         end
         if processed then return end
         if isKeyPressed(key, input) then
+            if not Library:_premiumAllowed(opts) then return end
             if mode == "toggle" then
                 toggled = not toggled
                 task.spawn(callback, toggled)
@@ -1889,6 +2820,13 @@ function Section:AddKeybind(opts)
 
     attachHover(frame, Theme.Bg3, Theme.Hover, s)
     if default and flag then Library:SetFlag(flag, default) end
+    Library:_registerFlagControl(flag, api)
+    Library:OnUnload(function()
+        if toggled then
+            toggled = false
+            task.spawn(callback, false)
+        end
+    end)
     return api
 end
 
@@ -1902,6 +2840,8 @@ function Section:AddColorpicker(opts)
     local hasAlpha = opts.Alpha ~= false
     local flag     = opts.Flag
     local callback = opts.Callback or function() end
+    default = readFlagDefault(flag, default) or default
+    if typeof(default) ~= "Color3" then default = Color3.fromRGB(255, 255, 255) end
 
     local frame = new("Frame", {
         Parent           = self.Content,
@@ -2105,6 +3045,9 @@ function Section:AddColorpicker(opts)
         if flag then Library:SetFlag(flag, color()) end
         if not silent then task.spawn(callback, color(), alpha) end
     end
+    function api:SetFlagValue(c, silent)
+        api:Set(c, nil, silent)
+    end
     function api:Get() return color(), alpha end
 
     function api:UpdatePosition()
@@ -2130,6 +3073,7 @@ function Section:AddColorpicker(opts)
     end
 
     swatch.MouseButton1Click:Connect(function()
+        if not Library:_premiumAllowed(opts) then return end
         if popup.Visible then api:Close() else api:Open() end
     end)
 
@@ -2238,6 +3182,505 @@ function Section:AddColorpicker(opts)
     api.Button = swatch
     api.Popup  = popup
     api:Set(default, 1, true)
+    Library:_registerFlagControl(flag, api)
+    return api
+end
+
+function Library:CreateModal(opts)
+    opts = opts or {}
+    if Library._activeModal and opts.ClosePrevious ~= false then
+        Library._activeModal:Close()
+    end
+    local sg = getScreenGui()
+    local overlay = new("Frame", {
+        Parent = sg,
+        Name = "Modal",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = tonumber(opts.Dim) or 0.35,
+        BorderSizePixel = 0,
+        ZIndex = 7000,
+    })
+    local card = new("Frame", {
+        Parent = overlay,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = opts.Size or UDim2.fromOffset(340, opts.Input and 190 or 160),
+        BackgroundColor3 = Theme.Bg2,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 7001,
+    })
+    stroke(card, Theme.BorderHi, 1)
+    pad(card, 12, 10, 12, 12)
+    listLayout(card, Enum.FillDirection.Vertical, 8)
+    local title = new("TextLabel", {
+        Parent = card,
+        Size = UDim2.new(1, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Font = FONT_SB,
+        TextSize = TEXT_SIZE_TITLE,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = tostring(opts.Title or "Modal"),
+        ZIndex = 7002,
+    })
+    local body = new("TextLabel", {
+        Parent = card,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Font = FONT,
+        TextSize = TEXT_SIZE_SMALL,
+        TextColor3 = Theme.SubText,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        TextWrapped = true,
+        Text = tostring(opts.Text or ""),
+        ZIndex = 7002,
+    })
+    local inputBox
+    if opts.Input then
+        local box = new("Frame", {
+            Parent = card,
+            Size = UDim2.new(1, 0, 0, 28),
+            BackgroundColor3 = Theme.Bg3,
+            BorderSizePixel = 0,
+            ZIndex = 7002,
+        })
+        stroke(box, Theme.Border, 1)
+        inputBox = new("TextBox", {
+            Parent = box,
+            Position = UDim2.fromOffset(8, 0),
+            Size = UDim2.new(1, -16, 1, 0),
+            BackgroundTransparency = 1,
+            Font = FONT,
+            TextSize = TEXT_SIZE_SMALL,
+            TextColor3 = Theme.Text,
+            PlaceholderColor3 = Theme.DimText,
+            PlaceholderText = tostring(opts.Placeholder or ""),
+            Text = tostring(opts.Default or ""),
+            ClearTextOnFocus = false,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 7003,
+        })
+    end
+    local holder = new("Frame", {
+        Parent = card,
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundTransparency = 1,
+        ZIndex = 7002,
+    })
+    listLayout(holder, Enum.FillDirection.Horizontal, 6, Enum.HorizontalAlignment.Right, Enum.VerticalAlignment.Center)
+    local api = {}
+    function api:Close()
+        if Library._activeModal == api then Library._activeModal = nil end
+        if overlay.Parent then overlay:Destroy() end
+    end
+    function api:GetInput()
+        return inputBox and inputBox.Text or nil
+    end
+    function api:SetText(value)
+        body.Text = tostring(value or "")
+    end
+    function api:SetTitle(value)
+        title.Text = tostring(value or "")
+    end
+    for i, button in ipairs(opts.Buttons or { { Text = "OK", Close = true } }) do
+        local b = new("TextButton", {
+            Parent = holder,
+            LayoutOrder = i,
+            Size = UDim2.fromOffset(84, 24),
+            BackgroundColor3 = Theme.Bg3,
+            BorderSizePixel = 0,
+            Font = FONT_M,
+            TextSize = TEXT_SIZE_SMALL,
+            TextColor3 = Theme.Text,
+            Text = tostring(button.Text or "OK"),
+            AutoButtonColor = false,
+            ZIndex = 7003,
+        })
+        local bs = stroke(b, Theme.Border, 1)
+        attachHover(b, Theme.Bg3, Theme.Hover, bs)
+        b.MouseButton1Click:Connect(function()
+            local close = button.Close ~= false
+            if button.Callback then
+                local result = safeCall(button.Callback, api:GetInput(), api)
+                if result == false then close = false end
+            end
+            if close then api:Close() end
+        end)
+    end
+    makeDraggable(card, card)
+    Library._activeModal = api
+    task.defer(function()
+        if inputBox then inputBox:CaptureFocus() end
+    end)
+    return api
+end
+
+function Library:CreateKeySystem(opts)
+    opts = opts or {}
+    local keys = normalizeKeyList(opts.Keys or opts.Key)
+    local required = opts.Required ~= false
+    local callback = opts.Callback or function() end
+    local caseSensitive = opts.CaseSensitive and true or false
+    local api = { Authenticated = false }
+    function api:Check(value)
+        if #keys == 0 then return true end
+        value = tostring(value or "")
+        for _, key in ipairs(keys) do
+            local a = tostring(key)
+            local b = value
+            if not caseSensitive then
+                a = a:lower()
+                b = b:lower()
+            end
+            if a == b then return true end
+        end
+        return false
+    end
+    function api:Success(value)
+        self.Authenticated = true
+        Library.KeyAuthenticated = true
+        if opts.SaveKey and writefile then
+            ensureSettingFolder()
+            pcall(function() writefile(settingPath(opts.SaveName or "key"):gsub("%.json$", ".txt"), tostring(value or "")) end)
+        end
+        task.spawn(callback, true, value)
+    end
+    function api:Fail(value)
+        task.spawn(callback, false, value)
+        Library:Notify({ Title = "Key system", Text = "Invalid key", Duration = 3 })
+    end
+    if opts.Enabled == false or #keys == 0 then
+        api:Success("")
+        return api
+    end
+    if opts.SaveKey and readfile and isfile then
+        local path = settingPath(opts.SaveName or "key"):gsub("%.json$", ".txt")
+        if isfile(path) then
+            local saved = readfile(path)
+            if api:Check(saved) then
+                api:Success(saved)
+                return api
+            end
+        end
+    end
+    local modal
+    local buttons = {
+        {
+            Text = tostring(opts.SubmitText or "Submit"),
+            Close = false,
+            Callback = function(value)
+                if api:Check(value) then
+                    api:Success(value)
+                    if modal then modal:Close() end
+                else
+                    api:Fail(value)
+                    return false
+                end
+            end,
+        },
+    }
+    if not required then
+        table.insert(buttons, {
+            Text = tostring(opts.SkipText or "Skip"),
+            Callback = function()
+                api:Success("")
+            end,
+        })
+    end
+    modal = self:CreateModal({
+        Title = opts.Title or "Key system",
+        Text = opts.Text or "Enter key",
+        Input = true,
+        Placeholder = opts.Placeholder or "Key",
+        Buttons = buttons,
+        ClosePrevious = opts.ClosePrevious,
+    })
+    api.Modal = modal
+    return api
+end
+
+function Library:SetActive(name, state, meta)
+    name = tostring(name or "")
+    if name == "" then return end
+    if state then
+        Library.ActiveListItems[name] = meta or true
+    else
+        Library.ActiveListItems[name] = nil
+    end
+    if Library.ActiveListApi then
+        Library.ActiveListApi:Refresh()
+    end
+end
+
+function Library:CreateActiveList(opts)
+    opts = opts or {}
+    local sg = getScreenGui()
+    if Library.ActiveListHolder and Library.ActiveListHolder.Parent then
+        Library.ActiveListHolder:Destroy()
+    end
+    local side = tostring(opts.Side or opts.Position or "right"):lower()
+    local holder = new("Frame", {
+        Parent = sg,
+        Name = "ActiveList",
+        AnchorPoint = Vector2.new(side == "left" and 0 or 1, 0),
+        Position = side == "left" and UDim2.new(0, 12, 0, tonumber(opts.Top) or 58) or UDim2.new(1, -12, 0, tonumber(opts.Top) or 58),
+        Size = UDim2.fromOffset(190, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = Theme.Bg2,
+        BackgroundTransparency = opts.Transparent and 1 or 0,
+        BorderSizePixel = 0,
+        ZIndex = 4500,
+    })
+    stroke(holder, Theme.Border, 1)
+    pad(holder, 8, 6, 8, 6)
+    listLayout(holder, Enum.FillDirection.Vertical, 4, Enum.HorizontalAlignment.Left, Enum.VerticalAlignment.Top)
+    local title = new("TextLabel", {
+        Parent = holder,
+        Size = UDim2.new(1, 0, 0, 14),
+        BackgroundTransparency = 1,
+        Font = FONT_SB,
+        TextSize = TEXT_SIZE_SMALL,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = tostring(opts.Title or "Enabled"),
+        ZIndex = 4501,
+    })
+    local api = { Holder = holder, Title = title }
+    function api:Refresh()
+        for _, child in ipairs(holder:GetChildren()) do
+            if child.Name == "Item" then child:Destroy() end
+        end
+        local names = {}
+        for name in pairs(Library.ActiveListItems) do table.insert(names, name) end
+        table.sort(names)
+        holder.Visible = opts.HideEmpty and #names == 0 and false or true
+        for _, name in ipairs(names) do
+            new("TextLabel", {
+                Parent = holder,
+                Name = "Item",
+                Size = UDim2.new(1, 0, 0, 14),
+                BackgroundTransparency = 1,
+                Font = FONT,
+                TextSize = TEXT_SIZE_SMALL,
+                TextColor3 = Theme.SubText,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Text = tostring(opts.Prefix or "> ") .. name,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                ZIndex = 4501,
+            })
+        end
+    end
+    function api:Destroy()
+        if holder.Parent then holder:Destroy() end
+        if Library.ActiveListApi == api then Library.ActiveListApi = nil end
+    end
+    Library.ActiveListHolder = holder
+    Library.ActiveListApi = api
+    api:Refresh()
+    return api
+end
+
+function Library:CreateWatermark(opts)
+    opts = opts or {}
+    local sg = getScreenGui()
+    local side = tostring(opts.Side or "left"):lower()
+    local items = opts.Items or { "name", "fps", "time" }
+    local label = new("TextLabel", {
+        Parent = sg,
+        Name = "Watermark",
+        AnchorPoint = Vector2.new(side == "right" and 1 or 0, 0),
+        Position = side == "right" and UDim2.new(1, -12, 0, 12) or UDim2.new(0, 12, 0, 12),
+        Size = UDim2.fromOffset(280, 24),
+        BackgroundColor3 = Theme.Bg2,
+        BorderSizePixel = 0,
+        Font = FONT_M,
+        TextSize = TEXT_SIZE_SMALL,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "",
+        ZIndex = 4600,
+    })
+    stroke(label, Theme.BorderHi, 1)
+    pad(label, 8, 0, 8, 0)
+    local fps = 0
+    local acc = 0
+    local frames = 0
+    local api = { Label = label, Items = items }
+    local function formatItem(item)
+        if type(item) == "function" then
+            return tostring(safeCall(item, api) or "")
+        end
+        item = tostring(item):lower()
+        if item == "name" then return Library.Name end
+        if item == "version" then return "v" .. Library.Version end
+        if item == "fps" then return tostring(fps) .. " fps" end
+        if item == "time" then return os.date("%H:%M:%S") end
+        if item == "players" then return tostring(#Players:GetPlayers()) .. " players" end
+        if item == "user" then return LP and LP.Name or "user" end
+        return item
+    end
+    function api:Refresh()
+        local parts = {}
+        for _, item in ipairs(self.Items) do
+            local text = formatItem(item)
+            if text ~= "" then table.insert(parts, text) end
+        end
+        label.Text = table.concat(parts, " | ")
+    end
+    function api:SetItems(newItems)
+        self.Items = newItems or self.Items
+        self:Refresh()
+    end
+    function api:SetText(text)
+        self.Items = { function() return text end }
+        self:Refresh()
+    end
+    function api:Destroy()
+        if label.Parent then label:Destroy() end
+    end
+    register(RS.Heartbeat:Connect(function(dt)
+        acc += dt
+        frames += 1
+        if acc >= 0.5 then
+            fps = math.floor(frames / acc + 0.5)
+            acc = 0
+            frames = 0
+            api:Refresh()
+        end
+    end))
+    api:Refresh()
+    return api
+end
+
+function Section:AddMiniGraph(opts)
+    opts = opts or {}
+    local maxPoints = tonumber(opts.MaxPoints) or 32
+    local minValue = tonumber(opts.Min) or 0
+    local maxValue = tonumber(opts.Max) or 100
+    local values = {}
+    for _, v in ipairs(opts.Values or {}) do table.insert(values, tonumber(v) or 0) end
+    local frame = new("Frame", {
+        Parent = self.Content,
+        Size = UDim2.new(1, 0, 0, 58),
+        BackgroundColor3 = Theme.Bg3,
+        BorderSizePixel = 0,
+    })
+    stroke(frame, Theme.Border, 1)
+    pad(frame, 8, 6, 8, 6)
+    local title = new("TextLabel", {
+        Parent = frame,
+        Size = UDim2.new(1, 0, 0, 12),
+        BackgroundTransparency = 1,
+        Font = FONT_M,
+        TextSize = TEXT_SIZE_SMALL,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = tostring(opts.Text or "Graph"),
+    })
+    local plot = new("Frame", {
+        Parent = frame,
+        Position = UDim2.fromOffset(0, 18),
+        Size = UDim2.new(1, 0, 1, -18),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+    })
+    listLayout(plot, Enum.FillDirection.Horizontal, 2, Enum.HorizontalAlignment.Left, Enum.VerticalAlignment.Bottom)
+    local api = {}
+    local function render()
+        for _, child in ipairs(plot:GetChildren()) do
+            if child.Name == "Bar" then child:Destroy() end
+        end
+        local range = maxValue - minValue
+        for i, value in ipairs(values) do
+            local pct = range ~= 0 and clamp((value - minValue) / range, 0, 1) or 0
+            new("Frame", {
+                Parent = plot,
+                Name = "Bar",
+                LayoutOrder = i,
+                Size = UDim2.new(1 / maxPoints, -2, pct, 0),
+                BackgroundColor3 = Theme.Accent,
+                BorderSizePixel = 0,
+            })
+        end
+    end
+    function api:Push(value)
+        table.insert(values, tonumber(value) or 0)
+        while #values > maxPoints do table.remove(values, 1) end
+        render()
+    end
+    function api:SetValues(newValues)
+        values = {}
+        for _, value in ipairs(newValues or {}) do table.insert(values, tonumber(value) or 0) end
+        while #values > maxPoints do table.remove(values, 1) end
+        render()
+    end
+    function api:SetRange(minV, maxV)
+        minValue = tonumber(minV) or minValue
+        maxValue = tonumber(maxV) or maxValue
+        render()
+    end
+    function api:SetText(text)
+        title.Text = tostring(text)
+    end
+    if type(opts.Provider) == "function" then
+        local elapsed = tonumber(opts.RefreshRate) or 0.5
+        register(RS.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            if elapsed >= (tonumber(opts.RefreshRate) or 0.5) then
+                elapsed = 0
+                local value = safeCall(opts.Provider, api)
+                if type(value) == "table" then api:SetValues(value) else api:Push(value) end
+            end
+        end))
+    end
+    render()
+    return api
+end
+
+function Section:AddPlayerList(opts)
+    opts = opts or {}
+    local playerMap = {}
+    local function collect()
+        local out = {}
+        playerMap = {}
+        for _, player in ipairs(Players:GetPlayers()) do
+            local label = opts.DisplayName and (player.DisplayName .. " (@" .. player.Name .. ")") or player.Name
+            table.insert(out, label)
+            playerMap[label] = player
+        end
+        table.sort(out)
+        return out
+    end
+    opts.Text = opts.Text or "Players"
+    opts.Options = collect()
+    opts.Provider = collect
+    opts.RefreshRate = opts.RefreshRate or 0.5
+    local api
+    if opts.Multi then
+        api = self:AddMultiDropdown(opts)
+    else
+        api = self:AddDropdown(opts)
+    end
+    function api:GetPlayer()
+        local selected = self:Get()
+        if type(selected) == "table" then
+            local out = {}
+            for _, name in ipairs(selected) do
+                if playerMap[name] then table.insert(out, playerMap[name]) end
+            end
+            return out
+        end
+        return playerMap[selected]
+    end
+    local function refresh()
+        if api.Refresh then api:Refresh(collect(), true) end
+    end
+    register(Players.PlayerAdded:Connect(refresh))
+    register(Players.PlayerRemoving:Connect(refresh))
     return api
 end
 
@@ -2383,4 +3826,3 @@ function Library:Notify(opts)
 end
 
 return Library
-
