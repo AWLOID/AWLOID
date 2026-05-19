@@ -1,39 +1,23 @@
---[[
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                       OBSCURA UI LIBRARY                     ║
-    ║                  Monochrome · Sharp · Universal              ║
-    ╚══════════════════════════════════════════════════════════════╝
 
-    Чёрно-белая UI-библиотека для Roblox.
-    Без скруглений. Идеальный drag для ПК и мобилы.
-    Полный набор элементов: Button, Toggle, Slider, Dropdown,
-    MultiDropdown, Textbox, Keybind, Colorpicker, Label, Paragraph,
-    Divider, Section, Notifications.
 
-    USAGE:
-        local Library = loadstring(game:HttpGet("..."))()
-        local Window  = Library:CreateWindow({ Title = "Obscura", Size = UDim2.fromOffset(620, 460) })
-        local Tab     = Window:CreateTab("Main")
-        local Section = Tab:CreateSection("General", "left")
-        Section:AddButton({ Text = "Click me", Callback = function() print("hi") end })
-]]
 
-----------------------------------------------------------------------
--- LIBRARY ROOT
-----------------------------------------------------------------------
 local Library              = {}
 Library.__index            = Library
-Library.Flags              = {}        -- [flag] = value
-Library.FlagCallbacks      = {}        -- [flag] = { fn, fn, ... }
+Library.Flags              = {}
+Library.FlagCallbacks      = {}
 Library.FlagControls       = {}
-Library.Connections        = {}        -- runtime connections (cleaned on :Destroy)
+Library.Connections        = {}
 Library.UnloadCallbacks    = {}
 Library.Keybinds           = {}
 Library.Windows            = {}
 Library.Notifications      = {}
-Library.Settings           = { Folder = "Obscura/settings", Profile = "default" }
+Library.Settings           = { Folder = "ObscuraUI/settings", BaseFolder = "ObscuraUI", Profile = "default" }
 Library.Premium            = { Enabled = false, Unlocked = false, Owned = {}, Prices = {} }
 Library.ActiveListItems    = {}
+Library.DynamicUpdaters    = {}
+Library.CloseConfirm       = true
+Library.WatermarkEnabled   = true
+Library.ActiveListEnabled  = true
 Library.Open               = true
 Library.Version            = "2.0.0"
 Library.Name               = "Obscura"
@@ -43,9 +27,7 @@ Library._activeColorpicker = nil
 Library._activeModal       = nil
 Library._themeVersion      = 0
 
-----------------------------------------------------------------------
--- SERVICES
-----------------------------------------------------------------------
+
 local UIS         = game:GetService("UserInputService")
 local TS          = game:GetService("TweenService")
 local RS          = game:GetService("RunService")
@@ -55,13 +37,11 @@ local HttpService = game:GetService("HttpService")
 local GuiService  = game:GetService("GuiService")
 local LP          = Players.LocalPlayer
 
-----------------------------------------------------------------------
--- THEME (strict monochrome, no roundness anywhere)
-----------------------------------------------------------------------
+
 local Theme = {
-    Bg          = Color3.fromRGB(8,   8,   8),   -- main window bg
-    Bg2         = Color3.fromRGB(14,  14,  14),  -- sidebars / sections
-    Bg3         = Color3.fromRGB(20,  20,  20),  -- inputs / controls
+    Bg          = Color3.fromRGB(8,   8,   8),
+    Bg2         = Color3.fromRGB(14,  14,  14),
+    Bg3         = Color3.fromRGB(20,  20,  20),
     Hover       = Color3.fromRGB(30,  30,  30),
     Border      = Color3.fromRGB(40,  40,  40),
     BorderHi    = Color3.fromRGB(255, 255, 255),
@@ -88,10 +68,9 @@ local TEXT_SIZE_SMALL = 12
 local TEXT_SIZE_TITLE = 14
 
 local IS_MOBILE = UIS.TouchEnabled and not UIS.MouseEnabled
+local unpack = table.unpack or unpack
 
-----------------------------------------------------------------------
--- HELPERS
-----------------------------------------------------------------------
+
 local function new(class, props)
     local inst = Instance.new(class)
     if props then
@@ -192,13 +171,42 @@ local function normalizeKeyList(keys)
     return { keys }
 end
 
+Library.Icons = {
+    home = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(964, 324), RectSize = Vector2.new(36, 36) },
+    settings = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(324, 124), RectSize = Vector2.new(36, 36) },
+    search = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(964, 324), RectSize = Vector2.new(36, 36) },
+    user = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(124, 4), RectSize = Vector2.new(36, 36) },
+    users = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(604, 44), RectSize = Vector2.new(36, 36) },
+    eye = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(84, 204), RectSize = Vector2.new(36, 36) },
+    lock = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(4, 684), RectSize = Vector2.new(36, 36) },
+    key = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(164, 244), RectSize = Vector2.new(36, 36) },
+    crown = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(244, 404), RectSize = Vector2.new(36, 36) },
+    chart = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(284, 284), RectSize = Vector2.new(36, 36) },
+    palette = { Image = "rbxassetid://3926307971", RectOffset = Vector2.new(124, 444), RectSize = Vector2.new(36, 36) },
+    save = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(724, 764), RectSize = Vector2.new(36, 36) },
+    trash = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(644, 724), RectSize = Vector2.new(36, 36) },
+    x = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(284, 4), RectSize = Vector2.new(24, 24) },
+    check = { Image = "rbxassetid://3926305904", RectOffset = Vector2.new(644, 204), RectSize = Vector2.new(36, 36) },
+}
+
+local function resolveIcon(icon)
+    if type(icon) == "string" and Library.Icons[icon:lower()] then
+        return Library.Icons[icon:lower()]
+    end
+    return icon
+end
+
 local function iconIsImage(icon)
+    icon = resolveIcon(icon)
+    if type(icon) == "table" then return true end
     if type(icon) == "number" then return true end
     if type(icon) ~= "string" then return false end
     return icon:find("rbxasset", 1, true) ~= nil or icon:match("^%d+$") ~= nil
 end
 
 local function iconImage(icon)
+    icon = resolveIcon(icon)
+    if type(icon) == "table" then return icon.Image or icon[1] or "" end
     if type(icon) == "number" then return "rbxassetid://" .. tostring(icon) end
     if type(icon) == "string" and icon:match("^%d+$") then return "rbxassetid://" .. icon end
     return tostring(icon)
@@ -207,10 +215,11 @@ end
 local function makeIcon(parent, icon, opts)
     opts = opts or {}
     if icon == nil then return nil end
+    icon = resolveIcon(icon)
     local size = opts.Size or UDim2.fromOffset(14, 14)
     local z = opts.ZIndex
     if iconIsImage(icon) then
-        return new("ImageLabel", {
+        local props = {
             Parent                 = parent,
             Name                   = opts.Name or "Icon",
             BackgroundTransparency = 1,
@@ -221,7 +230,12 @@ local function makeIcon(parent, icon, opts)
             ImageColor3            = opts.Color or Theme.SubText,
             ScaleType              = Enum.ScaleType.Fit,
             ZIndex                 = z or parent.ZIndex,
-        })
+        }
+        if type(icon) == "table" then
+            props.ImageRectOffset = icon.RectOffset or icon.ImageRectOffset
+            props.ImageRectSize = icon.RectSize or icon.ImageRectSize
+        end
+        return new("ImageLabel", props)
     end
     return new("TextLabel", {
         Parent                 = parent,
@@ -301,11 +315,11 @@ end
 
 local function settingPath(name)
     name = tostring(name or Library.Settings.Profile or "default"):gsub("[^%w_%-]", "_")
-    return tostring(Library.Settings.Folder or "Obscura/settings") .. "/" .. name .. ".json"
+    return tostring(Library.Settings.Folder or "ObscuraUI/settings") .. "/" .. name .. ".json"
 end
 
 local function ensureSettingFolder()
-    local folder = tostring(Library.Settings.Folder or "Obscura/settings")
+    local folder = tostring(Library.Settings.Folder or "ObscuraUI/settings")
     if makefolder then
         local parts = {}
         for part in folder:gmatch("[^/\\]+") do table.insert(parts, part) end
@@ -326,9 +340,7 @@ local function sameArray(a, b)
     return true
 end
 
-----------------------------------------------------------------------
--- DRAG (works perfectly on PC and Mobile)
-----------------------------------------------------------------------
+
 local function makeDraggable(target, handle)
     handle = handle or target
 
@@ -372,9 +384,7 @@ local function makeDraggable(target, handle)
     end))
 end
 
-----------------------------------------------------------------------
--- SCREEN GUI (initialized lazily)
-----------------------------------------------------------------------
+
 local function getScreenGui()
     if Library.ScreenGui and Library.ScreenGui.Parent then
         return Library.ScreenGui
@@ -385,7 +395,7 @@ local function getScreenGui()
         parent = LP:WaitForChild("PlayerGui")
     end
 
-    -- Try to use CoreGui if possible (executor environment)
+
     local sg = new("ScreenGui", {
         Name              = "Obscura_" .. HttpService:GenerateGUID(false):sub(1, 8),
         ResetOnSpawn      = false,
@@ -416,9 +426,7 @@ local function getScreenGui()
     return sg
 end
 
-----------------------------------------------------------------------
--- KEY UTILS
-----------------------------------------------------------------------
+
 local KEY_NAMES = {
     [Enum.UserInputType.MouseButton1] = "MB1",
     [Enum.UserInputType.MouseButton2] = "MB2",
@@ -447,9 +455,7 @@ local function isKeyPressed(key, input)
     return false
 end
 
-----------------------------------------------------------------------
--- FLAG SYSTEM
-----------------------------------------------------------------------
+
 function Library:SetFlag(flag, value)
     if not flag then return end
     Library.Flags[flag] = value
@@ -605,6 +611,11 @@ function Library:GetSettingsSnapshot()
         Flags = flags,
         Theme = theme,
         Font = serializeValue(FONT),
+        UI = {
+            CloseConfirm = Library.CloseConfirm,
+            WatermarkEnabled = Library.WatermarkEnabled,
+            ActiveListEnabled = Library.ActiveListEnabled,
+        },
         Premium = {
             Unlocked = Library.Premium.Unlocked,
             Owned = serializeValue(Library.Premium.Owned),
@@ -624,6 +635,11 @@ function Library:ApplySettings(data)
     if data.Font then
         local font = deserializeValue(data.Font)
         if font then self:SetFont(font) end
+    end
+    if data.UI then
+        if data.UI.CloseConfirm ~= nil then Library.CloseConfirm = data.UI.CloseConfirm and true or false end
+        if data.UI.WatermarkEnabled ~= nil and Library.WatermarkApi then Library.WatermarkApi:SetVisible(data.UI.WatermarkEnabled) end
+        if data.UI.ActiveListEnabled ~= nil and Library.ActiveListApi then Library.ActiveListApi:SetVisible(data.UI.ActiveListEnabled) end
     end
     if data.Premium then
         Library.Premium.Unlocked = data.Premium.Unlocked and true or false
@@ -669,7 +685,7 @@ function Library:DeleteSetting(name)
 end
 
 function Library:ListSettings()
-    local folder = tostring(Library.Settings.Folder or "Obscura/settings")
+    local folder = tostring(Library.Settings.Folder or "ObscuraUI/settings")
     local out = {}
     if listfiles then
         local ok, files = pcall(function() return listfiles(folder) end)
@@ -708,13 +724,26 @@ function Library:ShowPurchase(opts)
     opts = opts or {}
     local feature = tostring(opts.Feature or opts.Text or "Premium")
     local price = opts.Price or Library.Premium.Prices[feature] or "Premium"
+    local lines = {}
+    table.insert(lines, tostring(opts.Description or Library.Premium.Description or "This feature is premium."))
+    table.insert(lines, "Feature: " .. feature)
+    table.insert(lines, "Price: " .. tostring(price))
+    local benefits = opts.Benefits or opts.Info or Library.Premium.Benefits
+    if type(benefits) == "table" then
+        for _, item in ipairs(benefits) do
+            table.insert(lines, tostring(item))
+        end
+    elseif benefits then
+        table.insert(lines, tostring(benefits))
+    end
     local modal
     modal = self:CreateModal({
-        Title = "Premium",
-        Text = feature .. "\n" .. tostring(price),
+        Title = tostring(opts.Title or Library.Premium.Title or "Premium"),
+        Text = table.concat(lines, "\n"),
+        Size = opts.Size or UDim2.fromOffset(380, 220),
         Buttons = {
             {
-                Text = "Buy",
+                Text = tostring(opts.BuyText or "Buy"),
                 Callback = function()
                     local ok = safeCall(opts.PurchaseCallback or Library.Premium.PurchaseCallback, feature, price)
                     if ok == nil or ok == true then
@@ -724,7 +753,7 @@ function Library:ShowPurchase(opts)
                     if modal then modal:Close() end
                 end,
             },
-            { Text = "Later", Close = true },
+            { Text = tostring(opts.CancelText or "Later"), Close = true },
         },
     })
     return modal
@@ -781,9 +810,37 @@ function Library:RegisterKeybind(opts)
     return bind
 end
 
-----------------------------------------------------------------------
--- TOGGLE VISIBILITY
-----------------------------------------------------------------------
+function Library:_startDynamicScheduler()
+    if Library._dynamicConnection then return end
+    Library._dynamicConnection = register(RS.Heartbeat:Connect(function(dt)
+        for i = #Library.DynamicUpdaters, 1, -1 do
+            local updater = Library.DynamicUpdaters[i]
+            if updater.Active == false then
+                table.remove(Library.DynamicUpdaters, i)
+            else
+                updater.Elapsed += dt
+                if updater.Elapsed >= updater.Rate then
+                    updater.Elapsed = 0
+                    safeCall(updater.Callback)
+                end
+            end
+        end
+    end))
+end
+
+function Library:_addDynamicUpdater(rate, callback)
+    local updater = {
+        Rate = math.max(tonumber(rate) or 1, 0.1),
+        Elapsed = math.max(tonumber(rate) or 1, 0.1),
+        Callback = callback,
+        Active = true,
+    }
+    table.insert(Library.DynamicUpdaters, updater)
+    self:_startDynamicScheduler()
+    return updater
+end
+
+
 function Library:Toggle(state)
     if state == nil then state = not Library.Open end
     Library.Open = state
@@ -800,9 +857,7 @@ function Library:Toggle(state)
     end
 end
 
-----------------------------------------------------------------------
--- MOBILE TOGGLE BUTTON
-----------------------------------------------------------------------
+
 local function makeMobileButton()
     if Library.MobileButton then return end
     local sg = getScreenGui()
@@ -833,9 +888,7 @@ local function makeMobileButton()
     Library.MobileButton = btn
 end
 
-----------------------------------------------------------------------
--- DESTROY / UNLOAD
-----------------------------------------------------------------------
+
 function Library:Destroy()
     for _, bind in ipairs(Library.Keybinds) do
         if bind.Mode == "hold" and bind.State then
@@ -863,17 +916,22 @@ function Library:Destroy()
     Library.UnloadCallbacks   = {}
     Library.Keybinds          = {}
     Library.ActiveListItems   = {}
+    Library.DynamicUpdaters   = {}
     Library.MobileButton      = nil
     Library.NotifyHolder      = nil
     Library._activeDropdown   = nil
     Library._activeColorpicker= nil
     Library._listeningKeybind = nil
     Library._activeModal      = nil
+    Library._dynamicConnection= nil
+    Library.WatermarkApi      = nil
+    Library.ActiveListApi     = nil
+    Library.WatermarkHolder   = nil
+    Library.ActiveListHolder  = nil
+    Library.KeyAuthenticated  = false
 end
 
-----------------------------------------------------------------------
--- KEEP ACTIVE POPUP ANCHORED TO ITS BUTTON (window may move)
-----------------------------------------------------------------------
+
 register(RS.Heartbeat:Connect(function()
     local d = Library._activeDropdown
     if d and d.UpdatePosition then pcall(d.UpdatePosition, d) end
@@ -881,9 +939,7 @@ register(RS.Heartbeat:Connect(function()
     if cp and cp.UpdatePosition then pcall(cp.UpdatePosition, cp) end
 end))
 
-----------------------------------------------------------------------
--- CLOSE OPEN POPUPS WHEN CLICKING OUTSIDE
-----------------------------------------------------------------------
+
 register(UIS.InputBegan:Connect(function(input, processed)
     if input.UserInputType ~= Enum.UserInputType.MouseButton1
    and input.UserInputType ~= Enum.UserInputType.Touch then return end
@@ -928,14 +984,161 @@ register(UIS.InputEnded:Connect(function(input)
     end
 end))
 
-----------------------------------------------------------------------
--- WINDOW
-----------------------------------------------------------------------
+
 local Window = {}
 Window.__index = Window
 
+local function cloneOptions(source)
+    local out = {}
+    for k, v in pairs(source or {}) do
+        out[k] = v
+    end
+    return out
+end
+
+function Library:_createCallProxy()
+    local proxy = { _real = nil, _calls = {} }
+    local mt = {}
+    mt.__index = function(t, key)
+        if key == "_bindReal" then
+            return function(self, real)
+                self._real = real
+                for _, call in ipairs(self._calls) do
+                    if real and real[call.Name] then
+                        local result = real[call.Name](real, unpack(call.Args))
+                        if call.Return and call.Return._bindReal then
+                            call.Return:_bindReal(result)
+                        end
+                    end
+                end
+                self._calls = {}
+            end
+        end
+        if t._real and t._real[key] then
+            local value = t._real[key]
+            if type(value) == "function" then
+                return function(_, ...)
+                    return value(t._real, ...)
+                end
+            end
+            return value
+        end
+        return function(_, ...)
+            local ret = Library:_createCallProxy()
+            table.insert(t._calls, { Name = key, Args = { ... }, Return = ret })
+            return ret
+        end
+    end
+    return setmetatable(proxy, mt)
+end
+
+function Library:_createProtectedWindow(opts)
+    local proxy = { _opts = opts, _loaded = false, _real = nil, _tabs = {}, _settingsTabs = {}, Tabs = {} }
+    local mt = {}
+    local function loadWindow()
+        if proxy._loaded then return proxy._real end
+        proxy._loaded = true
+        local realOpts = cloneOptions(proxy._opts)
+        realOpts.KeySystem = nil
+        realOpts._SkipKeySystem = true
+        local real = Library:CreateWindow(realOpts)
+        proxy._real = real
+        proxy.Tabs = real.Tabs
+        for _, tabInfo in ipairs(proxy._tabs) do
+            local realTab = real:CreateTab(tabInfo.Name, tabInfo.Opts)
+            tabInfo.Proxy:_bindReal(realTab)
+            for _, sectionInfo in ipairs(tabInfo.Sections) do
+                local realSection = realTab:CreateSection(sectionInfo.Name, sectionInfo.Side)
+                sectionInfo.Proxy:_bindReal(realSection)
+                for _, item in ipairs(sectionInfo.Items) do
+                    if realSection[item.Method] then
+                        local result = realSection[item.Method](realSection, unpack(item.Args))
+                        item.Proxy:_bindReal(result)
+                    end
+                end
+            end
+        end
+        for _, settingsInfo in ipairs(proxy._settingsTabs) do
+            local realTab = real:CreateSettingsTab(settingsInfo.Opts)
+            settingsInfo.Proxy:_bindReal(realTab)
+        end
+        return real
+    end
+    function proxy:_load()
+        return loadWindow()
+    end
+    function proxy:CreateTab(name, tabOpts)
+        if self._real then return self._real:CreateTab(name, tabOpts) end
+        local tabProxy = Library:_createCallProxy()
+        local tabInfo = { Name = name, Opts = tabOpts, Proxy = tabProxy, Sections = {} }
+        function tabProxy:CreateSection(sectionName, side)
+            if self._real then return self._real:CreateSection(sectionName, side) end
+            local sectionProxy = Library:_createCallProxy()
+            local sectionInfo = { Name = sectionName, Side = side, Proxy = sectionProxy, Items = {} }
+            table.insert(tabInfo.Sections, sectionInfo)
+            local sectionMt = getmetatable(sectionProxy)
+            local oldIndex = sectionMt.__index
+            sectionMt.__index = function(t, key)
+                if key == "_bindReal" then return oldIndex(t, key) end
+                if t._real and t._real[key] then
+                    local value = t._real[key]
+                    if type(value) == "function" then
+                        return function(_, ...)
+                            return value(t._real, ...)
+                        end
+                    end
+                    return value
+                end
+                return function(_, ...)
+                    local itemProxy = Library:_createCallProxy()
+                    table.insert(sectionInfo.Items, { Method = key, Args = { ... }, Proxy = itemProxy })
+                    return itemProxy
+                end
+            end
+            return sectionProxy
+        end
+        table.insert(self._tabs, tabInfo)
+        table.insert(self.Tabs, tabProxy)
+        return tabProxy
+    end
+    function proxy:CreateSettingsTab(settingsOpts)
+        if self._real then return self._real:CreateSettingsTab(settingsOpts) end
+        local tabProxy = Library:_createCallProxy()
+        table.insert(self._settingsTabs, { Opts = settingsOpts or {}, Proxy = tabProxy })
+        table.insert(self.Tabs, tabProxy)
+        return tabProxy
+    end
+    mt.__index = function(t, key)
+        if rawget(t, key) ~= nil then return rawget(t, key) end
+        if t._real and t._real[key] then
+            local value = t._real[key]
+            if type(value) == "function" then
+                return function(_, ...)
+                    return value(t._real, ...)
+                end
+            end
+            return value
+        end
+        return nil
+    end
+    setmetatable(proxy, mt)
+    local keyOpts = cloneOptions(opts.KeySystem or {})
+    local original = keyOpts.Callback
+    keyOpts.Callback = function(ok, value)
+        if ok then
+            loadWindow()
+        end
+        safeCall(original, ok, value)
+    end
+    Library:CreateKeySystem(keyOpts)
+    return proxy
+end
+
 function Library:CreateWindow(opts)
     opts = opts or {}
+    if opts.KeySystem and not opts._SkipKeySystem and not Library.KeyAuthenticated then
+        return Library:_createProtectedWindow(opts)
+    end
     local title    = opts.Title    or "Obscura"
     local subtitle = opts.Subtitle or ("v" .. Library.Version)
     local size     = opts.Size     or UDim2.fromOffset(620, 460)
@@ -949,7 +1152,7 @@ function Library:CreateWindow(opts)
 
     local sg = getScreenGui()
 
-    -- Root
+
     local root = new("Frame", {
         Parent           = sg,
         Name             = "Window",
@@ -963,7 +1166,7 @@ function Library:CreateWindow(opts)
     })
     stroke(root, Theme.BorderHi, 1)
 
-    -- Subtle inner contour
+
     local inner = new("Frame", {
         Parent           = root,
         Name             = "Inner",
@@ -973,7 +1176,7 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
     })
 
-    -- Title bar (drag handle)
+
     local titleBar = new("Frame", {
         Parent           = inner,
         Name             = "TitleBar",
@@ -982,7 +1185,7 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
         Active           = true,
     })
-    new("Frame", { -- bottom border
+    new("Frame", {
         Parent           = titleBar,
         Size             = UDim2.new(1, 0, 0, 1),
         Position         = UDim2.new(0, 0, 1, -1),
@@ -990,7 +1193,7 @@ function Library:CreateWindow(opts)
         BorderSizePixel  = 0,
     })
 
-    -- Accent bar
+
     new("Frame", {
         Parent           = titleBar,
         Size             = UDim2.fromOffset(3, 14),
@@ -1038,7 +1241,7 @@ function Library:CreateWindow(opts)
         TextTruncate     = Enum.TextTruncate.AtEnd,
     })
 
-    -- Title bar buttons
+
     local btnHolder = new("Frame", {
         Parent                 = titleBar,
         AnchorPoint            = Vector2.new(1, 0.5),
@@ -1074,6 +1277,7 @@ function Library:CreateWindow(opts)
         return b
     end
 
+    local windowApi
     local minBtn   = makeTitleBtn("–", 1)
     local closeBtn = makeTitleBtn("×", 2)
 
@@ -1081,10 +1285,10 @@ function Library:CreateWindow(opts)
         Library:Toggle(false)
     end)
     closeBtn.MouseButton1Click:Connect(function()
-        Library:Destroy()
+        if windowApi then windowApi:RequestClose() else Library:RequestClose() end
     end)
 
-    -- Body
+
     local body = new("Frame", {
         Parent           = inner,
         Name             = "Body",
@@ -1093,7 +1297,7 @@ function Library:CreateWindow(opts)
         BackgroundTransparency = 1,
     })
 
-    -- Sidebar
+
     local sidebar = new("Frame", {
         Parent           = body,
         Name             = "Sidebar",
@@ -1101,7 +1305,7 @@ function Library:CreateWindow(opts)
         BackgroundColor3 = Theme.Bg2,
         BorderSizePixel  = 0,
     })
-    new("Frame", { -- right border
+    new("Frame", {
         Parent           = sidebar,
         Size             = UDim2.new(0, 1, 1, 0),
         Position         = UDim2.new(1, -1, 0, 0),
@@ -1158,7 +1362,7 @@ function Library:CreateWindow(opts)
     pad(tabList, 8, 8, 8, 8)
     listLayout(tabList, Enum.FillDirection.Vertical, 4)
 
-    -- Footer
+
     local footer = new("Frame", {
         Parent           = sidebar,
         Name             = "Footer",
@@ -1185,7 +1389,7 @@ function Library:CreateWindow(opts)
         Text                   = LP and LP.DisplayName or "user",
     })
 
-    -- Content holder
+
     local content = new("Frame", {
         Parent                 = body,
         Name                   = "Content",
@@ -1194,10 +1398,10 @@ function Library:CreateWindow(opts)
         BackgroundTransparency = 1,
     })
 
-    -- Drag
+
     makeDraggable(root, titleBar)
 
-    -- Toggle hotkey (PC)
+
     register(UIS.InputBegan:Connect(function(input, processed)
         if processed then return end
         if input.KeyCode == toggleKey then
@@ -1225,6 +1429,7 @@ function Library:CreateWindow(opts)
         ActiveTab = nil,
         Title     = title,
     }, Window)
+    windowApi = self
 
     table.insert(Library.Windows, self)
     if searchBox then
@@ -1246,25 +1451,35 @@ function Library:CreateWindow(opts)
         end))
     end
     self:UpdateLayout()
-    if opts.KeySystem then
-        local keyOpts = opts.KeySystem
-        local original = keyOpts.Callback
-        root.Visible = false
-        keyOpts.Callback = function(ok, value)
-            if ok then
-                root.Visible = true
-                Library.Open = true
-            end
-            safeCall(original, ok, value)
-        end
-        Library:CreateKeySystem(keyOpts)
-    end
     return self
 end
 
-----------------------------------------------------------------------
--- TAB
-----------------------------------------------------------------------
+function Library:RequestClose(opts)
+    opts = opts or {}
+    if opts.Force or Library.CloseConfirm == false then
+        Library:Destroy()
+        return
+    end
+    Library:CreateModal({
+        Title = opts.Title or "Close menu",
+        Text = opts.Text or "Are you sure you want to close Obscura?",
+        Buttons = {
+            {
+                Text = opts.ConfirmText or "Close",
+                Callback = function()
+                    Library:Destroy()
+                end,
+            },
+            { Text = opts.CancelText or "Cancel", Close = true },
+        },
+    })
+end
+
+function Window:RequestClose(opts)
+    Library:RequestClose(opts)
+end
+
+
 local Tab = {}
 Tab.__index = Tab
 
@@ -1275,7 +1490,7 @@ function Window:CreateTab(name, opts)
     local iconPos = tostring(opts.IconPosition or opts.IconSide or "left"):lower()
     local tabHeight = (icon and (iconPos == "top" or iconPos == "bottom")) and 42 or 28
 
-    -- Sidebar button
+
     local btn = new("TextButton", {
         Parent           = self.TabList,
         Name             = name,
@@ -1357,7 +1572,7 @@ function Window:CreateTab(name, opts)
         TextTruncate           = Enum.TextTruncate.AtEnd,
     })
 
-    -- Tab page
+
     local page = new("Frame", {
         Parent                 = self.Content,
         Name                   = name,
@@ -1367,7 +1582,7 @@ function Window:CreateTab(name, opts)
     })
     pad(page, 10, 10, 10, 10)
 
-    -- Two columns
+
     local left = new("ScrollingFrame", {
         Parent                 = page,
         Name                   = "Left",
@@ -1527,7 +1742,7 @@ end
 
 function Window:CreateSettingsTab(opts)
     opts = opts or {}
-    local tab = self:CreateTab(opts.Name or "Settings", { Icon = opts.Icon or opts.TabIcon or "*" })
+    local tab = self:CreateTab(opts.Name or "Settings", { Icon = opts.Icon or opts.TabIcon or "settings" })
     local menu = tab:CreateSection(opts.MenuTitle or "Menu", "left")
     local colors = opts.Colors or { "Bg", "Bg2", "Bg3", "Hover", "Border", "BorderHi", "Text", "SubText", "Accent" }
     for _, key in ipairs(colors) do
@@ -1552,33 +1767,122 @@ function Window:CreateSettingsTab(opts)
             if enum then Library:SetFont(enum) end
         end,
     })
-    local setting = tab:CreateSection(opts.SettingTitle or "Setting", "right")
-    setting:AddButton({
-        Text = "Save setting",
-        Callback = function()
-            local ok, result = Library:SaveSetting(opts.Profile or Library.Settings.Profile)
-            Library:Notify({ Title = "Setting", Text = ok and "Saved" or tostring(result), Duration = 3 })
+
+    menu:AddToggle({
+        Text = "Close confirmation",
+        Default = Library.CloseConfirm,
+        Flag = "obscura_close_confirm",
+        Callback = function(value)
+            Library.CloseConfirm = value and true or false
+        end,
+    })
+    menu:AddToggle({
+        Text = "Active list",
+        Default = Library.ActiveListEnabled,
+        Flag = "obscura_active_list",
+        Callback = function(value)
+            Library.ActiveListEnabled = value and true or false
+            if Library.ActiveListApi and Library.ActiveListApi.SetVisible then
+                Library.ActiveListApi:SetVisible(value)
+            end
+        end,
+    })
+    menu:AddToggle({
+        Text = "Watermark",
+        Default = Library.WatermarkEnabled,
+        Flag = "obscura_watermark",
+        Callback = function(value)
+            Library.WatermarkEnabled = value and true or false
+            if Library.WatermarkApi and Library.WatermarkApi.SetVisible then
+                Library.WatermarkApi:SetVisible(value)
+            end
+        end,
+    })
+
+    local setting = tab:CreateSection(opts.SettingTitle or "Configs", "right")
+    local selected = opts.Profile or Library.Settings.Profile
+    local nameBox
+    local dropdown
+    local function configs()
+        local list = Library:ListSettings()
+        table.sort(list)
+        if #list == 0 then table.insert(list, selected or "default") end
+        return list
+    end
+    nameBox = setting:AddTextbox({
+        Text = "Config name",
+        Placeholder = "name",
+        Default = selected,
+        Realtime = true,
+        Flag = "obscura_config_name",
+        Callback = function(value)
+            selected = tostring(value or "default"):gsub("[^%w_%-]", "_")
+            Library.Settings.Profile = selected
+        end,
+    })
+    dropdown = setting:AddDropdown({
+        Text = "Config list",
+        Options = configs(),
+        Default = selected,
+        RefreshRate = 1,
+        Provider = configs,
+        Flag = "obscura_config_selected",
+        Callback = function(value)
+            if value then
+                selected = tostring(value)
+                Library.Settings.Profile = selected
+                if nameBox then nameBox:Set(selected, true) end
+            end
         end,
     })
     setting:AddButton({
-        Text = "Load setting",
+        Text = "Save config",
         Callback = function()
-            local ok, result = Library:LoadSetting(opts.Profile or Library.Settings.Profile)
-            Library:Notify({ Title = "Setting", Text = ok and "Loaded" or tostring(result), Duration = 3 })
+            selected = nameBox and nameBox:Get() or selected
+            local ok, result = Library:SaveSetting(selected)
+            if dropdown and dropdown.Refresh then dropdown:Refresh(configs(), true) end
+            Library:Notify({ Title = "Configs", Text = ok and ("Saved: " .. tostring(selected)) or tostring(result), Duration = 3 })
+        end,
+    })
+    setting:AddButton({
+        Text = "Load config",
+        Callback = function()
+            selected = nameBox and nameBox:Get() or selected
+            local ok, result = Library:LoadSetting(selected)
+            Library:Notify({ Title = "Configs", Text = ok and ("Loaded: " .. tostring(selected)) or tostring(result), Duration = 3 })
+        end,
+    })
+    setting:AddButton({
+        Text = "Delete config",
+        Callback = function()
+            selected = nameBox and nameBox:Get() or selected
+            Library:CreateModal({
+                Title = "Delete config",
+                Text = "Delete " .. tostring(selected) .. "?",
+                Buttons = {
+                    {
+                        Text = "Delete",
+                        Callback = function()
+                            local ok, result = Library:DeleteSetting(selected)
+                            if dropdown and dropdown.Refresh then dropdown:Refresh(configs(), true) end
+                            Library:Notify({ Title = "Configs", Text = ok and "Deleted" or tostring(result), Duration = 3 })
+                        end,
+                    },
+                    { Text = "Cancel", Close = true },
+                },
+            })
         end,
     })
     setting:AddButton({
         Text = "Unload",
         Callback = function()
-            Library:Destroy()
+            Library:RequestClose()
         end,
     })
     return tab
 end
 
-----------------------------------------------------------------------
--- SECTION
-----------------------------------------------------------------------
+
 local Section = {}
 Section.__index = Section
 
@@ -1596,7 +1900,7 @@ function Tab:CreateSection(name, side)
     })
     stroke(frame, Theme.Border, 1)
 
-    -- Header strip
+
     local header = new("Frame", {
         Parent           = frame,
         Size             = UDim2.new(1, 0, 0, 26),
@@ -1629,7 +1933,7 @@ function Tab:CreateSection(name, side)
         BorderSizePixel  = 0,
     })
 
-    -- Content
+
     local content = new("Frame", {
         Parent                 = frame,
         Name                   = "Content",
@@ -1653,9 +1957,7 @@ function Tab:CreateSection(name, side)
     return section
 end
 
-----------------------------------------------------------------------
--- ELEMENT BASE
-----------------------------------------------------------------------
+
 local ROW_H = 26
 
 local function attachHover(btn, normal, hover, strokeInst)
@@ -1687,9 +1989,7 @@ local function addPremiumBadge(parent, opts)
     })
 end
 
-----------------------------------------------------------------------
--- LABEL
-----------------------------------------------------------------------
+
 function Section:AddLabel(text)
     local lbl = new("TextLabel", {
         Parent                 = self.Content,
@@ -1708,9 +2008,7 @@ function Section:AddLabel(text)
     return api
 end
 
-----------------------------------------------------------------------
--- PARAGRAPH
-----------------------------------------------------------------------
+
 function Section:AddParagraph(opts)
     opts = opts or {}
     local frame = new("Frame", {
@@ -1754,9 +2052,7 @@ function Section:AddParagraph(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- DIVIDER
-----------------------------------------------------------------------
+
 function Section:AddDivider()
     local frame = new("Frame", {
         Parent                 = self.Content,
@@ -1772,9 +2068,7 @@ function Section:AddDivider()
     })
 end
 
-----------------------------------------------------------------------
--- BUTTON
-----------------------------------------------------------------------
+
 function Section:AddButton(opts)
     opts = opts or {}
     local text     = tostring(opts.Text or "Button")
@@ -1803,7 +2097,7 @@ function Section:AddButton(opts)
     })
     addPremiumBadge(btn, opts)
 
-    -- chevron right
+
     new("TextLabel", {
         Parent                 = btn,
         BackgroundTransparency = 1,
@@ -1820,7 +2114,7 @@ function Section:AddButton(opts)
 
     btn.MouseButton1Click:Connect(function()
         if not Library:_premiumAllowed(opts) then return end
-        -- click flash
+
         local orig = btn.BackgroundColor3
         btn.BackgroundColor3 = Theme.Accent
         label.TextColor3     = Theme.Bg
@@ -1841,9 +2135,7 @@ function Section:AddButton(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- TOGGLE
-----------------------------------------------------------------------
+
 function Section:AddToggle(opts)
     opts = opts or {}
     local text     = tostring(opts.Text or "Toggle")
@@ -1929,9 +2221,7 @@ function Section:AddToggle(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- SLIDER
-----------------------------------------------------------------------
+
 function Section:AddSlider(opts)
     opts = opts or {}
     local text     = tostring(opts.Text or "Slider")
@@ -1978,7 +2268,7 @@ function Section:AddSlider(opts)
     })
     addPremiumBadge(frame, opts)
 
-    -- track
+
     local track = new("Frame", {
         Parent           = frame,
         Position         = UDim2.new(0, 0, 0, 18),
@@ -2030,7 +2320,7 @@ function Section:AddSlider(opts)
     function api:SetText(t) label.Text = tostring(t) end
     function api:SetRange(a, b) minV, maxV = a, b; api:Set(value, true) end
 
-    -- input
+
     local dragging = false
     local function updateFromInput(input)
         if not Library:_premiumAllowed(opts) then return end
@@ -2075,9 +2365,7 @@ function Section:AddSlider(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- DROPDOWN (single select)
-----------------------------------------------------------------------
+
 function Section:AddDropdown(opts)
     opts = opts or {}
     local text     = tostring(opts.Text or "Dropdown")
@@ -2142,7 +2430,7 @@ function Section:AddDropdown(opts)
     })
     addPremiumBadge(frame, opts)
 
-    -- popup list
+
     local list = new("Frame", {
         Parent           = getScreenGui(),
         Visible          = false,
@@ -2295,7 +2583,6 @@ function Section:AddDropdown(opts)
     render()
     Library:_registerFlagControl(flag, api)
     if type(provider) == "function" then
-        local elapsed = refreshRate
         local function refreshFromProvider()
             local newOptions = safeCall(provider, api)
             if type(newOptions) == "table" then
@@ -2303,20 +2590,12 @@ function Section:AddDropdown(opts)
             end
         end
         refreshFromProvider()
-        register(RS.Heartbeat:Connect(function(dt)
-            elapsed += dt
-            if elapsed >= refreshRate then
-                elapsed = 0
-                refreshFromProvider()
-            end
-        end))
+        Library:_addDynamicUpdater(refreshRate, refreshFromProvider)
     end
     return api
 end
 
-----------------------------------------------------------------------
--- MULTIDROPDOWN
-----------------------------------------------------------------------
+
 function Section:AddMultiDropdown(opts)
     opts = opts or {}
     local text     = tostring(opts.Text or "MultiDropdown")
@@ -2562,7 +2841,6 @@ function Section:AddMultiDropdown(opts)
     api:Set(default, true)
     Library:_registerFlagControl(flag, api)
     if type(provider) == "function" then
-        local elapsed = refreshRate
         local function refreshFromProvider()
             local newOptions = safeCall(provider, api)
             if type(newOptions) == "table" then
@@ -2570,20 +2848,12 @@ function Section:AddMultiDropdown(opts)
             end
         end
         refreshFromProvider()
-        register(RS.Heartbeat:Connect(function(dt)
-            elapsed += dt
-            if elapsed >= refreshRate then
-                elapsed = 0
-                refreshFromProvider()
-            end
-        end))
+        Library:_addDynamicUpdater(refreshRate, refreshFromProvider)
     end
     return api
 end
 
-----------------------------------------------------------------------
--- TEXTBOX
-----------------------------------------------------------------------
+
 function Section:AddTextbox(opts)
     opts = opts or {}
     local text        = tostring(opts.Text or "Input")
@@ -2685,14 +2955,12 @@ function Section:AddSearchBar(opts)
     return self:AddTextbox(opts)
 end
 
-----------------------------------------------------------------------
--- KEYBIND
-----------------------------------------------------------------------
+
 function Section:AddKeybind(opts)
     opts = opts or {}
     local text        = tostring(opts.Text or "Keybind")
     local default     = opts.Default
-    local mode        = (opts.Mode or "Toggle"):lower() -- "Toggle" | "Hold" | "Always"
+    local mode        = (opts.Mode or "Toggle"):lower()
     local flag        = opts.Flag
     local callback    = opts.Callback or function() end
     local onChanged   = opts.OnChanged or function() end
@@ -2759,7 +3027,7 @@ function Section:AddKeybind(opts)
 
     btn.MouseButton1Click:Connect(function()
         if listening then
-            -- Click the listen button again to cancel listening
+
             api:Cancel()
             return
         end
@@ -2774,7 +3042,7 @@ function Section:AddKeybind(opts)
 
     register(UIS.InputBegan:Connect(function(input, processed)
         if listening then
-            -- Skip UI-processed events (clicks that opened listening, TextBox keys, etc.)
+
             if processed then return end
             if input.UserInputType == Enum.UserInputType.Keyboard then
                 if input.KeyCode == Enum.KeyCode.Escape then
@@ -2830,9 +3098,7 @@ function Section:AddKeybind(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- COLORPICKER (HSV + Alpha)
-----------------------------------------------------------------------
+
 function Section:AddColorpicker(opts)
     opts = opts or {}
     local text     = tostring(opts.Text or "Color")
@@ -2875,7 +3141,7 @@ function Section:AddColorpicker(opts)
     })
     stroke(swatch, Theme.BorderHi, 1)
 
-    -- Popup
+
     local popup = new("Frame", {
         Parent           = getScreenGui(),
         Visible          = false,
@@ -2887,8 +3153,7 @@ function Section:AddColorpicker(opts)
     stroke(popup, Theme.BorderHi, 1)
     pad(popup, 8)
 
-    -- SV plane: pure-hue base, white horizontal overlay (saturation),
-    --           black vertical overlay (value)
+
     local sv = new("Frame", {
         Parent           = popup,
         Size             = UDim2.new(1, -16, 0, 120),
@@ -2897,7 +3162,7 @@ function Section:AddColorpicker(opts)
         ZIndex           = 1501,
         Active           = true,
     })
-    -- Saturation: white -> transparent (left -> right)
+
     local satOverlay = new("Frame", {
         Parent           = sv,
         Size             = UDim2.fromScale(1, 1),
@@ -2912,7 +3177,7 @@ function Section:AddColorpicker(opts)
             NumberSequenceKeypoint.new(1, 1),
         }),
     })
-    -- Value: transparent -> black (top -> bottom)
+
     local valOverlay = new("Frame", {
         Parent           = sv,
         Size             = UDim2.fromScale(1, 1),
@@ -2938,7 +3203,7 @@ function Section:AddColorpicker(opts)
     })
     stroke(svCursor, Color3.fromRGB(0, 0, 0), 1)
 
-    -- Hue bar
+
     local hue = new("Frame", {
         Parent           = popup,
         Position         = UDim2.fromOffset(0, 132),
@@ -2975,13 +3240,16 @@ function Section:AddColorpicker(opts)
             Parent           = popup,
             Position         = UDim2.fromOffset(0, 150),
             Size             = UDim2.new(1, -16, 0, 12),
-            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            BackgroundColor3 = default,
             BorderSizePixel  = 0,
             ZIndex           = 1501,
         })
         new("UIGradient", {
             Parent = alphaBar,
-            Color  = ColorSequence.new(Color3.fromRGB(0,0,0), Color3.fromRGB(255,255,255)),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(1, 0),
+            }),
         })
         alphaCursor = new("Frame", {
             Parent           = alphaBar,
@@ -2995,7 +3263,7 @@ function Section:AddColorpicker(opts)
         stroke(alphaCursor, Color3.fromRGB(0, 0, 0), 1)
     end
 
-    -- Hex input
+
     local hex = new("TextBox", {
         Parent                 = popup,
         Position               = UDim2.fromOffset(0, hasAlpha and 170 or 150),
@@ -3012,7 +3280,7 @@ function Section:AddColorpicker(opts)
     })
     stroke(hex, Theme.Border, 1)
 
-    -- State
+
     local h, s2, v = 0, 0, 1
     do
         local r, g, b = default.R, default.G, default.B
@@ -3032,6 +3300,7 @@ function Section:AddColorpicker(opts)
         local c = color()
         sv.BackgroundColor3   = Color3.fromHSV(h, 1, 1)
         swatch.BackgroundColor3 = c
+        if alphaBar then alphaBar.BackgroundColor3 = c end
         svCursor.Position     = UDim2.fromScale(s2, 1 - v)
         hueCursor.Position    = UDim2.new(h, 0, 0.5, 0)
         if alphaCursor then alphaCursor.Position = UDim2.new(alpha, 0, 0.5, 0) end
@@ -3077,7 +3346,7 @@ function Section:AddColorpicker(opts)
         if popup.Visible then api:Close() else api:Open() end
     end)
 
-    -- SV interaction
+
     local svDrag = false
     local function updateSV(input)
         local p = sv.AbsolutePosition
@@ -3107,7 +3376,7 @@ function Section:AddColorpicker(opts)
         end
     end))
 
-    -- Hue
+
     local hueDrag = false
     local function updateHue(input)
         local p = hue.AbsolutePosition
@@ -3322,7 +3591,6 @@ end
 function Library:CreateKeySystem(opts)
     opts = opts or {}
     local keys = normalizeKeyList(opts.Keys or opts.Key)
-    local required = opts.Required ~= false
     local callback = opts.Callback or function() end
     local caseSensitive = opts.CaseSensitive and true or false
     local api = { Authenticated = false }
@@ -3370,7 +3638,7 @@ function Library:CreateKeySystem(opts)
     local modal
     local buttons = {
         {
-            Text = tostring(opts.SubmitText or "Submit"),
+            Text = tostring(opts.SubmitText or opts.CheckText or "Check"),
             Close = false,
             Callback = function(value)
                 if api:Check(value) then
@@ -3382,20 +3650,35 @@ function Library:CreateKeySystem(opts)
                 end
             end,
         },
-    }
-    if not required then
-        table.insert(buttons, {
-            Text = tostring(opts.SkipText or "Skip"),
-            Callback = function()
-                api:Success("")
+        {
+            Text = tostring(opts.GetKeyText or "Get Key"),
+            Close = false,
+            Callback = function(_, modalApi)
+                local keyInfo = opts.GetKey or opts.KeyUrl or opts.KeyLink or opts.Link or ""
+                if type(opts.GetKeyCallback) == "function" then
+                    local result = safeCall(opts.GetKeyCallback, modalApi, api)
+                    if result ~= nil then keyInfo = result end
+                end
+                if keyInfo and tostring(keyInfo) ~= "" then
+                    if setclipboard then
+                        pcall(function() setclipboard(tostring(keyInfo)) end)
+                        Library:Notify({ Title = "Key system", Text = "Key link copied", Duration = 3 })
+                    else
+                        Library:Notify({ Title = "Key system", Text = tostring(keyInfo), Duration = 5 })
+                    end
+                else
+                    Library:Notify({ Title = "Key system", Text = "No key link provided", Duration = 3 })
+                end
+                return false
             end,
-        })
-    end
+        },
+    }
     modal = self:CreateModal({
         Title = opts.Title or "Key system",
-        Text = opts.Text or "Enter key",
+        Text = opts.Text or opts.Description or "Enter key to load menu",
         Input = true,
         Placeholder = opts.Placeholder or "Key",
+        Size = opts.Size or UDim2.fromOffset(360, 190),
         Buttons = buttons,
         ClosePrevious = opts.ClosePrevious,
     })
@@ -3450,6 +3733,11 @@ function Library:CreateActiveList(opts)
         ZIndex = 4501,
     })
     local api = { Holder = holder, Title = title }
+    function api:SetVisible(value)
+        Library.ActiveListEnabled = value and true or false
+        holder.Visible = Library.ActiveListEnabled
+        if Library.ActiveListEnabled then self:Refresh() end
+    end
     function api:Refresh()
         for _, child in ipairs(holder:GetChildren()) do
             if child.Name == "Item" then child:Destroy() end
@@ -3457,7 +3745,7 @@ function Library:CreateActiveList(opts)
         local names = {}
         for name in pairs(Library.ActiveListItems) do table.insert(names, name) end
         table.sort(names)
-        holder.Visible = opts.HideEmpty and #names == 0 and false or true
+        holder.Visible = Library.ActiveListEnabled and not (opts.HideEmpty and #names == 0)
         for _, name in ipairs(names) do
             new("TextLabel", {
                 Parent = holder,
@@ -3480,6 +3768,7 @@ function Library:CreateActiveList(opts)
     end
     Library.ActiveListHolder = holder
     Library.ActiveListApi = api
+    Library.ActiveListEnabled = Library:GetFlag("obscura_active_list", opts.Enabled ~= false) and true or false
     api:Refresh()
     return api
 end
@@ -3539,6 +3828,10 @@ function Library:CreateWatermark(opts)
         self.Items = { function() return text end }
         self:Refresh()
     end
+    function api:SetVisible(value)
+        Library.WatermarkEnabled = value and true or false
+        label.Visible = Library.WatermarkEnabled
+    end
     function api:Destroy()
         if label.Parent then label:Destroy() end
     end
@@ -3552,6 +3845,10 @@ function Library:CreateWatermark(opts)
             api:Refresh()
         end
     end))
+    Library.WatermarkHolder = label
+    Library.WatermarkApi = api
+    Library.WatermarkEnabled = Library:GetFlag("obscura_watermark", opts.Enabled ~= false) and true or false
+    api:SetVisible(Library.WatermarkEnabled)
     api:Refresh()
     return api
 end
@@ -3627,15 +3924,10 @@ function Section:AddMiniGraph(opts)
         title.Text = tostring(text)
     end
     if type(opts.Provider) == "function" then
-        local elapsed = tonumber(opts.RefreshRate) or 0.5
-        register(RS.Heartbeat:Connect(function(dt)
-            elapsed += dt
-            if elapsed >= (tonumber(opts.RefreshRate) or 0.5) then
-                elapsed = 0
-                local value = safeCall(opts.Provider, api)
-                if type(value) == "table" then api:SetValues(value) else api:Push(value) end
-            end
-        end))
+        Library:_addDynamicUpdater(tonumber(opts.RefreshRate) or 0.5, function()
+            local value = safeCall(opts.Provider, api)
+            if type(value) == "table" then api:SetValues(value) else api:Push(value) end
+        end)
     end
     render()
     return api
@@ -3684,9 +3976,7 @@ function Section:AddPlayerList(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- NOTIFICATIONS
-----------------------------------------------------------------------
+
 local function getNotifyHolder()
     local sg = getScreenGui()
     if Library.NotifyHolder and Library.NotifyHolder.Parent then
@@ -3726,7 +4016,7 @@ function Library:Notify(opts)
     })
     stroke(card, Theme.BorderHi, 1)
 
-    -- Accent bar
+
     local accent = new("Frame", {
         Parent           = card,
         Size             = UDim2.new(0, 2, 1, 0),
@@ -3773,7 +4063,7 @@ function Library:Notify(opts)
         ZIndex                 = 5002,
     })
 
-    -- Progress bar
+
     local bar = new("Frame", {
         Parent           = card,
         AnchorPoint      = Vector2.new(0, 1),
@@ -3784,8 +4074,7 @@ function Library:Notify(opts)
         ZIndex           = 5002,
     })
 
-    -- Helpers: animate / snap every visual part of the card.
-    -- "Content" frame stays fully transparent (it's a layout container).
+
     local function setTrans(t)
         card.BackgroundTransparency = t
         for _, d in ipairs(card:GetDescendants()) do
